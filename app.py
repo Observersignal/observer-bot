@@ -625,28 +625,85 @@ _PAGE = r"""<!DOCTYPE html>
   .btn-stop{background:linear-gradient(180deg,#2e1a1a,#201212);color:var(--red);border-color:rgba(240,169,138,.35);font-weight:700}
   .btn-gold{background:linear-gradient(180deg,#241f12,#191509);color:var(--gold);border-color:rgba(231,200,118,.35);font-weight:700}
   .grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}
-  @media(max-width:760px){.grid{grid-template-columns:1fr}}
+  @media(max-width:720px){.grid{grid-template-columns:1fr}}
+
+  /* ---- Getting-started callout ---- */
+  .intro{
+    background:linear-gradient(180deg,rgba(231,200,118,.06),rgba(231,200,118,.02));
+    border:1px solid rgba(231,200,118,.30);border-radius:14px;
+    padding:18px 20px;margin-bottom:22px;
+  }
+  .intro h2{margin:0 0 4px;font-size:13px;letter-spacing:.6px;text-transform:uppercase;color:var(--gold)}
+  .intro p.lead{color:var(--mut);font-size:12.5px;margin:0 0 12px}
+  .intro ol{margin:0;padding-left:0;list-style:none;counter-reset:step}
+  .intro li{
+    position:relative;padding:6px 0 6px 36px;font-size:13px;line-height:1.5;
+    counter-increment:step;color:var(--ink);
+  }
+  .intro li::before{
+    content:counter(step);position:absolute;left:0;top:5px;
+    width:24px;height:24px;border-radius:50%;
+    background:rgba(231,200,118,.12);border:1px solid rgba(231,200,118,.4);color:var(--gold);
+    font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;
+  }
+  .intro li b{color:var(--gold);font-weight:600}
+  .intro li code{background:rgba(231,200,118,.10);border:1px solid rgba(231,200,118,.25);border-radius:5px;padding:1px 6px;color:var(--gold);font-size:12px}
+
+  /* ---- Reassurance note (DRY-RUN is safe) ---- */
+  .safe-note{
+    display:flex;gap:9px;align-items:flex-start;
+    background:rgba(127,224,166,.07);border:1px solid rgba(127,224,166,.30);
+    border-radius:10px;padding:10px 13px;margin:14px 0 0;
+    color:var(--green);font-size:12px;line-height:1.5;
+  }
+  .safe-note .si{flex:0 0 auto;font-size:14px;line-height:1.2}
+  .safe-note b{color:var(--green);font-weight:700}
+
   .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px 18px 20px}
   .card h2{margin:0 0 4px;font-size:13px;letter-spacing:.6px;text-transform:uppercase;color:var(--gold)}
   .card .sub{color:var(--mut);font-size:12px;margin:0 0 14px}
-  .field{margin-bottom:14px}
-  .field label{display:block;font-size:12px;color:var(--mut);margin-bottom:5px;letter-spacing:.2px}
+  .field{margin-bottom:16px}
+  .field>label{display:block;font-size:12px;color:var(--ink);margin-bottom:5px;letter-spacing:.2px;font-weight:600}
   .field input[type=text],.field input[type=password],.field input[type=number]{
     width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:9px;
     color:var(--ink);padding:9px 11px;font:inherit;
   }
   .field input:focus{outline:none;border-color:var(--gold2)}
   .hint{color:var(--gold);font-size:12px;margin-top:6px}
-  .help{color:var(--mut);font-size:11px;margin-top:5px}
-  .two{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-  .toggle{display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none}
-  .toggle input{display:none}
-  .sw{width:42px;height:24px;border-radius:999px;background:#26261f;border:1px solid var(--line);position:relative;transition:.15s;flex:0 0 auto}
-  .sw::after{content:"";position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:var(--mut);transition:.15s}
-  .toggle input:checked + .sw{background:rgba(231,200,118,.25);border-color:var(--gold2)}
-  .toggle input:checked + .sw::after{left:20px;background:var(--gold)}
-  .toggle .tl{font-size:13px}
-  .toggle .td{display:block;color:var(--mut);font-size:11px}
+  .help{color:var(--mut);font-size:11.5px;line-height:1.55;margin-top:6px}
+  .help b{color:var(--ink);font-weight:600}
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:720px){.two{grid-template-columns:1fr}}
+
+  /* ---- iOS-style toggle (self-contained; never inherits .field label) ---- */
+  .toggle{
+    display:flex;align-items:flex-start;gap:12px;cursor:pointer;user-select:none;
+    margin:0;font-weight:400;
+  }
+  /* Hide the checkbox visually but keep it focusable/clickable. */
+  .toggle input{
+    position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
+    clip:rect(0 0 0 0);white-space:nowrap;border:0;
+  }
+  .toggle .sw{
+    flex:0 0 auto;display:inline-block;position:relative;
+    width:44px;height:26px;border-radius:999px;
+    background:var(--panel2);border:1px solid var(--line);
+    transition:background .18s ease,border-color .18s ease;margin-top:1px;
+  }
+  .toggle .sw::after{
+    content:"";position:absolute;top:2px;left:2px;
+    width:20px;height:20px;border-radius:50%;
+    background:var(--mut);transition:transform .18s ease,background .18s ease;
+  }
+  .toggle input:checked + .sw{background:rgba(231,200,118,.30);border-color:var(--gold2)}
+  .toggle input:checked + .sw::after{transform:translateX(18px);background:var(--gold)}
+  /* Green variant for the safety-positive DRY-RUN switch. */
+  .toggle.green input:checked + .sw{background:rgba(127,224,166,.25);border-color:rgba(127,224,166,.5)}
+  .toggle.green input:checked + .sw::after{background:var(--green)}
+  .toggle input:focus-visible + .sw{box-shadow:0 0 0 3px rgba(231,200,118,.35)}
+  .toggle .tl{font-size:13px;color:var(--ink);font-weight:600;line-height:1.35}
+  .toggle .td{display:block;color:var(--mut);font-size:11.5px;font-weight:400;line-height:1.5;margin-top:3px}
   .row-actions{display:flex;gap:10px;margin-top:8px;flex-wrap:wrap}
   .full{grid-column:1/-1}
   .status-line{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px dashed var(--line)}
@@ -662,10 +719,20 @@ _PAGE = r"""<!DOCTYPE html>
     background:#050505;border:1px solid var(--line);border-radius:10px;padding:10px 12px;
     height:220px;overflow:auto;font-size:11.5px;line-height:1.55;white-space:pre-wrap;color:#cfd2c9;
   }
-  .testbox{margin-top:10px;font-size:12px}
-  .testbox .tr{display:flex;gap:8px;padding:4px 0}
-  .testbox .ico{width:16px;flex:0 0 auto}
+  .testbox{margin-top:12px;font-size:12.5px}
+  .testbox .tr{display:flex;gap:9px;padding:6px 10px;border-radius:8px;line-height:1.5;margin-bottom:6px}
+  .testbox .tr.ok{background:rgba(127,224,166,.07);border:1px solid rgba(127,224,166,.25)}
+  .testbox .tr.fail{background:rgba(240,169,138,.07);border:1px solid rgba(240,169,138,.25)}
+  .testbox .tr.na{background:var(--panel2);border:1px solid var(--line)}
+  .testbox .ico{width:16px;flex:0 0 auto;font-weight:700}
+  .testbox .fix{display:block;color:var(--mut);font-size:11.5px;margin-top:3px}
   .ok{color:var(--green)} .fail{color:var(--red)} .na{color:var(--mut)}
+  /* Inline save result line */
+  .result{margin-top:12px;font-size:12.5px;padding:9px 13px;border-radius:8px;display:none;line-height:1.5}
+  .result.show{display:block}
+  .result.good{background:rgba(127,224,166,.07);border:1px solid rgba(127,224,166,.25);color:var(--green)}
+  .result.bad{background:rgba(240,169,138,.07);border:1px solid rgba(240,169,138,.25);color:var(--red)}
+  .result .fix{display:block;color:var(--mut);font-size:11.5px;margin-top:3px}
   .toast{
     position:fixed;left:50%;bottom:24px;transform:translateX(-50%);
     background:var(--panel2);border:1px solid var(--gold2);color:var(--ink);
@@ -686,30 +753,42 @@ _PAGE = r"""<!DOCTYPE html>
     <button id="toggleBtn" class="btn-start" onclick="toggleRun()">Start</button>
   </header>
 
+  <div class="intro">
+    <h2>Getting started</h2>
+    <p class="lead">New here? Follow these five steps in order. You can do it all from this page.</p>
+    <ol>
+      <li>Paste your <b>Feed token</b> — you get it on Telegram: send <code>/bot</code> to The Observer access bot and it hands you the token.</li>
+      <li>Add <b>your Hyperliquid account</b>: your wallet address plus a trade-only API / agent wallet key (it can trade but can't withdraw).</li>
+      <li>Set <b>your capital</b> — the bot sizes every trade to it automatically. You never size trades by hand.</li>
+      <li>Press <b>Test connection</b> to check everything is right.</li>
+      <li>Press <b>Start</b> with <b>DRY-RUN ON</b> to watch it safely first, then turn DRY-RUN OFF to go live.</li>
+    </ol>
+    <div class="safe-note"><span class="si">●</span><span>Safe to explore — while <b>DRY-RUN is ON</b> the bot only simulates. Nothing happens to your money until you turn it OFF.</span></div>
+  </div>
+
   <div class="grid">
     <!-- LEFT: settings -->
     <div class="card">
       <h2>Capital &amp; sizing</h2>
       <p class="sub">You only need your base capital — the bot mirrors the model's proportion per trade.</p>
-      <div class="two">
-        <div class="field">
-          <label>Base capital (USD)</label>
-          <input type="number" id="BASE_CAPITAL" step="any" oninput="recalcHint()" />
-        </div>
-        <div class="field">
-          <label>Risk per trade (%)</label>
-          <input type="number" id="RISK_PER_TRADE_PCT" step="any" oninput="recalcHint()" />
-        </div>
+      <div class="field">
+        <label>Base capital (USD)</label>
+        <input type="number" id="BASE_CAPITAL" step="any" oninput="recalcHint()" />
+        <div class="help">Your total trading capital. The bot risks the same proportion per trade as the model (1%). Enter <b>5000</b> and it uses about <b>$50</b> per trade; enter <b>20000</b> and it uses about <b>$200</b>. You never size each trade by hand.</div>
       </div>
-      <div class="two">
-        <div class="field">
-          <label>Leverage (x)</label>
-          <input type="number" id="LEVERAGE" step="any" />
-        </div>
-        <div class="field">
-          <label class="toggle"><input type="checkbox" id="ISOLATED" /><span class="sw"></span>
-            <span class="tl">Isolated margin<span class="td">what the model uses (off = cross)</span></span></label>
-        </div>
+      <div class="field">
+        <label>Risk per trade (%)</label>
+        <input type="number" id="RISK_PER_TRADE_PCT" step="any" oninput="recalcHint()" />
+        <div class="help">How much of your capital each trade uses as margin. <b>1%</b> mirrors the model. Lower it to trade smaller.</div>
+      </div>
+      <div class="field">
+        <label>Leverage (x)</label>
+        <input type="number" id="LEVERAGE" step="any" />
+        <div class="help">Leverage applied to each trade. The model uses <b>10x</b>.</div>
+      </div>
+      <div class="field">
+        <label class="toggle"><input type="checkbox" id="ISOLATED" /><span class="sw"></span>
+          <span class="tl">Isolated margin<span class="td">Each position keeps its own margin (what the model uses), so one bad trade can't drain the others. Off = cross margin (shared).</span></span></label>
       </div>
       <div class="hint" id="sizeHint">≈ — margin per trade</div>
     </div>
@@ -720,11 +799,12 @@ _PAGE = r"""<!DOCTYPE html>
       <div class="field">
         <label>Account address (0x…)</label>
         <input type="text" id="HL_ACCOUNT_ADDRESS" placeholder="0x…" autocomplete="off" spellcheck="false" />
+        <div class="help">Your Hyperliquid wallet address — the public <b>0x…</b> that holds your funds.</div>
       </div>
       <div class="field">
         <label>API / agent wallet secret</label>
         <input type="password" id="HL_API_SECRET" placeholder="•••• (leave blank to keep)" autocomplete="new-password" spellcheck="false" />
-        <div class="help">Never paste your main wallet's seed phrase. This is a trade-only key.</div>
+        <div class="help"><b>NOT your main wallet key.</b> In Hyperliquid open the API section and create an <b>API wallet</b> (also called an agent wallet) — it can place trades but <b>cannot withdraw your funds</b>. Copy its private key here. Even if it ever leaks, no one can take your money with it.</div>
       </div>
     </div>
 
@@ -734,25 +814,27 @@ _PAGE = r"""<!DOCTYPE html>
       <div class="field">
         <label>Feed token</label>
         <input type="password" id="OBSERVER_FEED_TOKEN" placeholder="•••• (leave blank to keep)" autocomplete="new-password" spellcheck="false" />
+        <div class="help">Your personal key to receive the signals. Get it on Telegram: send <b>/bot</b> to The Observer access bot and it gives you the token. Leave blank to try the bot in a local demo first.</div>
       </div>
       <div class="field">
         <label>API URL</label>
         <input type="text" id="OBSERVER_API_URL" spellcheck="false" />
+        <div class="help">Where the bot fetches signals from. The default is already correct — leave it as is unless you're told otherwise.</div>
       </div>
     </div>
 
     <div class="card">
       <h2>Risk limits</h2>
       <p class="sub">Local guards — closes are never blocked.</p>
-      <div class="two">
-        <div class="field">
-          <label>Max open positions</label>
-          <input type="number" id="MAX_OPEN" step="1" />
-        </div>
-        <div class="field">
-          <label>Daily loss limit (USD)</label>
-          <input type="number" id="DAILY_LOSS_LIMIT_USD" step="any" />
-        </div>
+      <div class="field">
+        <label>Max open positions</label>
+        <input type="number" id="MAX_OPEN" step="1" />
+        <div class="help">The most positions the bot will hold at the same time.</div>
+      </div>
+      <div class="field">
+        <label>Daily loss limit (USD)</label>
+        <input type="number" id="DAILY_LOSS_LIMIT_USD" step="any" />
+        <div class="help">If your realized loss today reaches this amount, the bot stops opening <b>new</b> trades for the rest of the day. It still closes existing ones.</div>
       </div>
     </div>
 
@@ -761,28 +843,31 @@ _PAGE = r"""<!DOCTYPE html>
       <p class="sub">DRY-RUN is the default. Going LIVE places real orders on your account.</p>
       <div class="two">
         <div class="field">
-          <label class="toggle"><input type="checkbox" id="DRY_RUN" /><span class="sw"></span>
-            <span class="tl">DRY-RUN (simulate only)<span class="td">ON = no real orders. Turn OFF to go LIVE.</span></span></label>
+          <label class="toggle green"><input type="checkbox" id="DRY_RUN" /><span class="sw"></span>
+            <span class="tl">DRY-RUN (practice mode)<span class="td">ON = the bot only simulates and places NO real orders. Start here. Turn OFF only when you're ready for real trading.</span></span></label>
         </div>
         <div class="field">
           <label>Poll interval (seconds)</label>
           <input type="number" id="POLL_SECONDS" step="1" />
+          <div class="help">How often the bot checks for new signals. <b>4</b> is fine.</div>
         </div>
       </div>
       <div class="two">
         <div class="field">
           <label class="toggle"><input type="checkbox" id="ALLOW_FLIP" /><span class="sw"></span>
-            <span class="tl">Allow flips<span class="td">close current, open the opposite side</span></span></label>
+            <span class="tl">Allow flips<span class="td">If a signal flips direction, close the current position and open the opposite one.</span></span></label>
         </div>
         <div class="field">
           <label class="toggle"><input type="checkbox" id="ALLOW_INCREASE" /><span class="sw"></span>
-            <span class="tl">Allow increases<span class="td">add to an existing position</span></span></label>
+            <span class="tl">Allow increases<span class="td">Add to a position you already hold if the signal says so. Off by default (more conservative).</span></span></label>
         </div>
       </div>
+      <div class="safe-note"><span class="si">●</span><span>Safe to explore — in <b>DRY-RUN</b> nothing happens to your money. Leave it ON until you've watched the bot and trust it.</span></div>
       <div class="row-actions">
         <button class="btn-gold" onclick="saveConfig()">Save settings</button>
         <button onclick="runTest()">Test connection</button>
       </div>
+      <div class="result" id="saveResult"></div>
       <div class="testbox" id="testbox"></div>
     </div>
 
@@ -876,28 +961,82 @@ function collect(){
   return body;
 }
 
+// Show an inline result line (good=green, bad=red). `fix` is an optional
+// one-line "what to do" shown under the main message.
+function showResult(good, msg, fix){
+  const el=$("saveResult");
+  el.className="result show "+(good?"good":"bad");
+  el.innerHTML = (good?"✓ ":"⚠ ")+msg + (fix?'<span class="fix">'+fix+'</span>':"");
+  clearTimeout(el._h);
+  if(good) el._h=setTimeout(()=>{el.className="result";}, 6000);
+}
+
 async function saveConfig(){
   try{
     const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(collect())});
     const d=await r.json();
-    if(d.ok){ toast(d.message||"Saved."); $("HL_API_SECRET").value=""; $("OBSERVER_FEED_TOKEN").value=""; prefill(); }
-    else { toast((d.errors&&d.errors.join(" · "))||d.error||"Save failed.", true); }
-  }catch(e){ toast("Save failed: "+e, true); }
+    if(d.ok){
+      $("HL_API_SECRET").value=""; $("OBSERVER_FEED_TOKEN").value=""; prefill();
+      showResult(true, "Settings saved. They'll apply the next time you press Start.");
+    } else {
+      // Turn validation errors into plain language; keep raw codes out of view.
+      console.error("Save failed:", d.errors||d.error);
+      showResult(false, friendlySaveError(d), "Check the highlighted value and try Save again.");
+    }
+  }catch(e){
+    console.error("Save request failed:", e);
+    showResult(false, "Couldn't save your settings.", "Make sure the control panel is still running and try again.");
+  }
+}
+
+// Map server validation errors to a single human sentence (no field codes).
+function friendlySaveError(d){
+  const errs = d.errors||[];
+  const j = errs.join(" ");
+  if(/POLL_SECONDS/.test(j)) return "The poll interval needs to be a whole number of at least 1 second.";
+  if(/negative/.test(j))     return "One of the numbers can't be negative.";
+  if(/number|whole/.test(j)) return "One of the values isn't a valid number.";
+  if(/OBSERVER_API_URL/.test(j)) return "The API URL must start with http:// or https://.";
+  if(errs.length) return "Some values couldn't be saved — please check the numbers you entered.";
+  return "Couldn't save your settings.";
 }
 
 async function runTest(){
-  const box=$("testbox"); box.innerHTML='<div class="tr na">Testing…</div>';
+  const box=$("testbox");
+  box.innerHTML='<div class="tr na"><span class="ico">•</span><span>Checking your connection…</span></div>';
   try{
     const r=await fetch("/api/test",{method:"POST"}); const d=await r.json();
     const res=d.results||{};
-    box.innerHTML = row("Feed token", res.feed) + row("Hyperliquid account", res.hyperliquid);
-  }catch(e){ box.innerHTML='<div class="tr fail">Test failed: '+e+'</div>'; }
+    box.innerHTML = row("Signal feed", res.feed) + row("Hyperliquid account", res.hyperliquid);
+  }catch(e){
+    console.error("Test request failed:", e);
+    box.innerHTML='<div class="tr fail"><span class="ico">✕</span><span><b>Connection test:</b> couldn\'t run the check.<span class="fix">Make sure the control panel is still running and try again.</span></span></div>';
+  }
 }
+
+// Plain-language results for the connectivity test. Technical detail (HTTP
+// codes etc.) is logged to the console, never shown to the user.
 function row(label, r){
   if(!r) return "";
-  let cls="na", ico="•";
-  if(r.ok===true){cls="ok";ico="✓";} else if(r.ok===false){cls="fail";ico="✕";}
-  return '<div class="tr '+cls+'"><span class="ico">'+ico+'</span><span><b>'+label+':</b> '+(r.message||"")+'</span></div>';
+  let cls="na", ico="•", msg=r.message||"", fix="";
+  if(r.ok===true){
+    cls="ok"; ico="✓";
+    msg = label==="Signal feed" ? "Connected — your token works." : "Connected — your account is reachable.";
+  } else if(r.ok===false){
+    cls="fail"; ico="✕";
+    console.warn(label+" test:", r.message);
+    if(label==="Signal feed"){
+      if(/reject|401|403|token/i.test(r.message)){ msg="That feed token wasn't accepted."; fix="Re-copy it from Telegram (send /bot to the access bot) and Save again."; }
+      else { msg="Couldn't reach the signal feed."; fix="Check your internet connection, then try again."; }
+    } else {
+      if(/reach|URL|connection/i.test(r.message)){ msg="Couldn't reach Hyperliquid."; fix="Check your internet connection, then try again."; }
+      else { msg="Couldn't read that account."; fix="Double-check your account address (the 0x… one) and Save again."; }
+    }
+  } else {
+    // ok === null: not configured yet.
+    msg = label==="Signal feed" ? "No token set — running the local demo." : "No account address set yet.";
+  }
+  return '<div class="tr '+cls+'"><span class="ico">'+ico+'</span><span><b>'+label+':</b> '+msg+(fix?'<span class="fix">'+fix+'</span>':"")+'</span></div>';
 }
 
 async function toggleRun(){
@@ -905,10 +1044,23 @@ async function toggleRun(){
   try{
     const ep = running ? "/api/stop" : "/api/start";
     const r=await fetch(ep,{method:"POST"}); const d=await r.json();
-    toast(d.message||"", !d.ok);
+    if(!d.ok) console.warn("Start/stop:", d.message);
+    toast(friendlyRunMessage(d), !d.ok);
     if(d.status) render(d.status);
-  }catch(e){ toast("Action failed: "+e, true); }
+  }catch(e){
+    console.error("Start/stop request failed:", e);
+    toast("Couldn't reach the bot — is the control panel still running?", true);
+  }
   finally{ btn.disabled=false; }
+}
+
+// Keep the server's clear messages, but soften the LIVE-missing-keys case.
+function friendlyRunMessage(d){
+  const m = d.message||"";
+  if(!d.ok && /without:/i.test(m)){
+    return "Can't go live yet — add your feed token, account address and API key first (or keep DRY-RUN on to practice).";
+  }
+  return m || (d.ok?"Done.":"That didn't work.");
 }
 
 function render(s){
