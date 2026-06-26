@@ -16,6 +16,30 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+# Keys this app knows about — used by the UI to write .env safely (it only
+# touches these, preserving any other lines the user may have added).
+KNOWN_ENV_KEYS = (
+    "OBSERVER_API_URL",
+    "OBSERVER_FEED_TOKEN",
+    "HL_ACCOUNT_ADDRESS",
+    "HL_API_SECRET",
+    "BASE_CAPITAL",
+    "RISK_PER_TRADE_PCT",
+    "LEVERAGE",
+    "ISOLATED",
+    "SIZE_USD",
+    "MAX_OPEN",
+    "DAILY_LOSS_LIMIT_USD",
+    "DRY_RUN",
+    "POLL_SECONDS",
+    "ALLOW_FLIP",
+    "ALLOW_INCREASE",
+)
+
+# The secret keys that must never be echoed back to the UI in clear text.
+SECRET_ENV_KEYS = ("HL_API_SECRET", "OBSERVER_FEED_TOKEN")
+
+
 def _get_str(name: str, default: str = "") -> str:
     return (os.getenv(name) or default).strip()
 
@@ -144,4 +168,22 @@ def load_config() -> Config:
 
 
 # Module-level singleton so other modules can `from config import CFG`.
+#
+# NOTE: modules that need to pick up live changes after a config save should
+# read `config.CFG` at call-time (e.g. `import config; config.CFG.x`) rather
+# than binding the name at import-time, because `reload()` rebinds this global.
 CFG: Config = load_config()
+
+
+def reload() -> "Config":
+    """
+    Re-read the client's .env from disk and rebuild the CFG singleton.
+
+    Called by the UI after a config save so the next Start picks up the new
+    values. `load_dotenv(override=True)` re-applies the file over os.environ.
+    Returns the freshly-built Config.
+    """
+    global CFG
+    load_dotenv(override=True)
+    CFG = load_config()
+    return CFG

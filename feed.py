@@ -20,7 +20,7 @@ from typing import List, Tuple
 
 import requests
 
-from config import CFG
+import config
 
 log = logging.getLogger("observer.feed")
 
@@ -93,13 +93,17 @@ def poll(cursor: str) -> Tuple[List[dict], str]:
     Returns (events, new_cursor). On any error returns ([], cursor) so the
     main loop simply tries again on the next tick — it never raises.
     """
-    if CFG.mock_mode:
+    # Read the live config at call-time so a config reload (from the UI) is
+    # picked up without re-importing this module.
+    cfg = config.CFG
+
+    if cfg.mock_mode:
         return _poll_mock(cursor)
 
-    url = f"{CFG.api_url.rstrip('/')}/api/signals/feed"
+    url = f"{cfg.api_url.rstrip('/')}/api/signals/feed"
     headers = {
-        "Authorization": f"Bearer {CFG.feed_token}",
-        "X-Feed-Token": CFG.feed_token,
+        "Authorization": f"Bearer {cfg.feed_token}",
+        "X-Feed-Token": cfg.feed_token,
         "Accept": "application/json",
     }
     params = {"since": cursor}

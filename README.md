@@ -34,17 +34,52 @@ The bot connects out to the signal feed; nothing connects in to your machine.
 
 3. **Python 3.9+** installed.
 
-## Setup
+## Quick start (recommended) — the control panel
+
+The easiest way to set up and run the bot is the local control panel. One
+command opens a page in your browser where you fill in your settings with simple
+forms and Start / Stop the bot with a button.
 
 ```bash
-# 1. Copy the config template and edit it
-cp .env.example .env
-
-# 2. Install dependencies
+# 1. Install dependencies
 pip install -r requirements.txt
+
+# 2. Launch the control panel
+python app.py
 ```
 
-Open `.env` and fill in:
+Your browser opens to **http://127.0.0.1:8765** (the URL is also printed in the
+console in case it doesn't open automatically). From there you:
+
+1. **Fill in your settings** — capital, your Hyperliquid account, your feed
+   token, risk and safety — in the form. Pressing **Save** writes them **only**
+   to your local `.env`. Nothing is ever sent anywhere.
+2. See a big **DRY-RUN / LIVE** indicator and press **Start / Stop**.
+3. Watch **live status**: running state, open positions, realized-today, and the
+   most recent log lines.
+
+The panel is bound to **127.0.0.1 only** — it is never exposed on your network.
+Your keys live only in your machine's `.env`; the page only ever shows whether a
+secret is *set*, never its value. (Change the port with `UI_PORT=...` if 8765 is
+taken.)
+
+> Closing the browser tab does **not** stop the bot — it keeps running until you
+> press **Stop** or quit `app.py` (Ctrl-C in its console).
+
+### Headless / VPS option
+
+If you prefer no UI (e.g. running 24-7 on a VPS), configure your `.env`
+manually and run the loop directly — same engine, no browser:
+
+```bash
+# Copy the config template and edit it by hand
+cp .env.example .env
+
+# Run the loop until Ctrl-C
+python bot.py
+```
+
+The fields you set are the same either way:
 
 | Setting               | What to put                                              |
 |-----------------------|---------------------------------------------------------|
@@ -64,7 +99,8 @@ All other settings have sensible defaults — see the comments in `.env.example`
 ## Run a DRY-RUN first (recommended)
 
 `DRY_RUN=true` is the default. In dry-run the bot **places no real orders** —
-it just logs exactly what it *would* do. Run it and watch:
+it just logs exactly what it *would* do. Start it from the panel (the **Start**
+button while the DRY-RUN pill is amber), or headless:
 
 ```bash
 python bot.py
@@ -86,13 +122,14 @@ Take your time here. Make sure the sizing and behaviour are what you expect.
 
 ## Go live
 
-When you are confident, set your real feed token and keys in `.env`, then set:
+When you are confident, make sure your real feed token, account address and API
+secret are set, then turn **DRY-RUN off**:
 
-```
-DRY_RUN=false
-```
+- **In the panel:** toggle **DRY-RUN** off (the pill turns green / **LIVE**),
+  press **Save**, then **Start**. Going LIVE is blocked until those keys are set.
+- **Headless:** set `DRY_RUN=false` in `.env` and run `python bot.py` again.
 
-and run `python bot.py` again. Now real orders are placed on your account.
+Now real orders are placed on your account.
 
 ## Kill-switch
 

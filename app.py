@@ -1,0 +1,994 @@
+"""
+app.py — local web configuration + control UI for The Observer bot.
+
+    python app.py
+
+Starts a tiny web server bound to 127.0.0.1 ONLY, opens your browser to it,
+and serves a single self-contained page where you can:
+
+  1. Fill in your settings (capital, Hyperliquid keys, feed token, risk, safety)
+     via forms — written ONLY to your local .env, never sent anywhere.
+  2. See a big DRY-RUN / LIVE indicator and Start / Stop the bot.
+  3. Watch live status: running state, open positions, realized-today, and the
+     most recent log lines.
+
+Everything stays on your machine. This is just a friendlier face over the same
+`bot.py` loop — that still works standalone for a headless VPS.
+
+NO third-party dependencies: pure Python stdlib (http.server). The trade SDK is
+only needed once you go LIVE, exactly as for bot.py.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import threading
+import urllib.error
+import urllib.request
+import webbrowser
+from collections import deque
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any, Dict, Optional, Tuple
+
+import config
+import state as state_mod
+from bot import run_loop
+
+# --- localhost only --------------------------------------------------------
+# Bind to the loopback interface ONLY so the UI is never exposed on the LAN.
+HOST = "127.0.0.1"
+PORT = int(os.getenv("UI_PORT", "8765") or "8765")
+
+ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+
+# Ring buffer of recent log lines, fed by the running loop's log sink.
+_LOG_MAX = 200
+_log_buffer: "deque[str]" = deque(maxlen=_LOG_MAX)
+_log_lock = threading.Lock()
+
+# Loop control. Only one loop thread may run at a time.
+_loop_lock = threading.Lock()
+_loop_thread: "Optional[threading.Thread]" = None
+_stop_event: "Optional[threading.Event]" = None
+
+
+def _log_sink(line: str) -> None:
+    with _log_lock:
+        _log_buffer.append(line)
+
+
+def _recent_log(n: int = 30) -> "list[str]":
+    with _log_lock:
+        if n >= len(_log_buffer):
+            return list(_log_buffer)
+        return list(_log_buffer)[-n:]
+
+
+def _is_running() -> bool:
+    t = _loop_thread
+    return t is not None and t.is_alive()
+
+
+# ---------------------------------------------------------------------------
+# Config <-> .env helpers (only touch KNOWN_ENV_KEYS, preserve everything else)
+# ---------------------------------------------------------------------------
+# Allowed value types for validation of incoming form fields.
+_BOOL_KEYS = ("ISOLATED", "DRY_RUN", "ALLOW_FLIP", "ALLOW_INCREASE")
+_FLOAT_KEYS = (
+    "BASE_CAPITAL",
+    "RISK_PER_TRADE_PCT",
+    "LEVERAGE",
+    "SIZE_USD",
+    "DAILY_LOSS_LIMIT_USD",
+)
+_INT_KEYS = ("MAX_OPEN", "POLL_SECONDS")
+
+
+def _parse_env_file(path: str) -> "list[Tuple[Optional[str], str]]":
+    """
+    Read .env into an ordered list of (key, raw_line).
+
+    For "KEY=value" lines, key is the KEY; for comments/blanks, key is None and
+    raw_line is preserved verbatim so we never clobber the user's own notes.
+    """
+    rows: "list[Tuple[Optional[str], str]]" = []
+    if not os.path.exists(path):
+        return rows
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            for raw in fh.read().splitlines():
+                stripped = raw.strip()
+                if not stripped or stripped.startswith("#") or "=" not in stripped:
+                    rows.append((None, raw))
+                    continue
+                key = stripped.split("=", 1)[0].strip()
+                rows.append((key, raw))
+    except OSError:
+        return rows
+    return rows
+
+
+def _write_env_file(path: str, updates: Dict[str, str]) -> None:
+    """
+    Write `updates` into .env, updating known keys in place and appending any
+    that are missing. Comments and unknown keys are preserved verbatim. Written
+    atomically via a temp file + os.replace.
+    """
+    rows = _parse_env_file(path)
+    seen: set = set()
+    out_lines: "list[str]" = []
+
+    for key, raw in rows:
+        if key is not None and key in updates:
+            out_lines.append(f"{key}={updates[key]}")
+            seen.add(key)
+        else:
+            out_lines.append(raw)
+
+    # Append any known-but-missing keys at the end (e.g. brand-new .env).
+    missing = [k for k in config.KNOWN_ENV_KEYS if k in updates and k not in seen]
+    if missing:
+        if out_lines and out_lines[-1].strip():
+            out_lines.append("")
+        for k in missing:
+            out_lines.append(f"{k}={updates[k]}")
+
+    body = "\n".join(out_lines).rstrip("\n") + "\n"
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(body)
+    os.replace(tmp, path)
+
+
+def _existing_env_values() -> Dict[str, str]:
+    """Current raw values from .env (for keep-existing-secret behaviour)."""
+    out: Dict[str, str] = {}
+    for key, raw in _parse_env_file(ENV_PATH):
+        if key is None:
+            continue
+        if "=" in raw:
+            out[key] = raw.split("=", 1)[1].strip()
+    return out
+
+
+def _validate_and_normalise(body: Dict[str, Any]) -> Tuple[Dict[str, str], "list[str]"]:
+    """
+    Validate incoming form fields. Returns (updates, errors).
+
+    `updates` maps env KEY -> string value, only for keys the user actually
+    provided. Empty secret fields are dropped (means "keep existing"). On any
+    validation error we return the collected messages and an empty update set.
+    """
+    errors: "list[str]" = []
+    updates: Dict[str, str] = {}
+    existing = _existing_env_values()
+
+    def _has(k: str) -> bool:
+        return k in body and body[k] is not None
+
+    for key in config.KNOWN_ENV_KEYS:
+        if not _has(key):
+            continue
+        val = body[key]
+
+        # Secrets: an empty field means "keep what's already there".
+        if key in config.SECRET_ENV_KEYS:
+            sval = str(val).strip()
+            if sval == "":
+                continue  # keep existing
+            updates[key] = sval
+            continue
+
+        if key in _BOOL_KEYS:
+            updates[key] = "true" if _coerce_bool(val) else "false"
+            continue
+
+        sval = str(val).strip()
+
+        if key in _FLOAT_KEYS:
+            if sval == "":
+                continue
+            try:
+                num = float(sval)
+            except ValueError:
+                errors.append(f"{key} must be a number")
+                continue
+            if num < 0:
+                errors.append(f"{key} cannot be negative")
+                continue
+            updates[key] = _fmt_num(num)
+            continue
+
+        if key in _INT_KEYS:
+            if sval == "":
+                continue
+            try:
+                num_i = int(float(sval))
+            except ValueError:
+                errors.append(f"{key} must be a whole number")
+                continue
+            if num_i < 0:
+                errors.append(f"{key} cannot be negative")
+                continue
+            if key == "POLL_SECONDS" and num_i < 1:
+                errors.append("POLL_SECONDS must be at least 1")
+                continue
+            updates[key] = str(num_i)
+            continue
+
+        # Plain strings (URLs, address).
+        if key == "OBSERVER_API_URL" and sval and not sval.startswith(("http://", "https://")):
+            errors.append("OBSERVER_API_URL must start with http:// or https://")
+            continue
+        updates[key] = sval
+
+    # Don't bother writing identical no-op secret kept values; harmless anyway.
+    _ = existing
+    return (updates if not errors else {}), errors
+
+
+def _coerce_bool(val: Any) -> bool:
+    if isinstance(val, bool):
+        return val
+    return str(val).strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def _fmt_num(num: float) -> str:
+    """Format a float without a trailing .0 for whole numbers (clean .env)."""
+    if num == int(num):
+        return str(int(num))
+    return repr(num)
+
+
+# ---------------------------------------------------------------------------
+# Status assembly (NEVER includes secrets)
+# ---------------------------------------------------------------------------
+def _build_status() -> Dict[str, Any]:
+    cfg = config.CFG
+    try:
+        st = state_mod.load()
+        open_positions = [
+            {"coin": coin, "side": side} for coin, side in st.open_positions.items()
+        ]
+        realized_today = round(float(st.realized_today_usd), 2)
+    except Exception:
+        open_positions = []
+        realized_today = 0.0
+
+    # feed_ok is "unknown" unless a token is set (we don't probe on every poll).
+    if cfg.feed_token:
+        feed_ok: Any = "unknown"
+    else:
+        feed_ok = "unknown"
+
+    config_present = os.path.exists(ENV_PATH)
+
+    if cfg.configured_live():
+        mode = "LIVE"
+    else:
+        mode = "DRY-RUN"
+
+    return {
+        "running": _is_running(),
+        "dry_run": cfg.dry_run,
+        "mode": mode,
+        "base_capital": cfg.base_capital,
+        "size_usd": cfg.size_usd,
+        "risk_per_trade_pct": cfg.risk_per_trade_pct,
+        "leverage": cfg.leverage,
+        "isolated": cfg.isolated,
+        "max_open": cfg.max_open,
+        "daily_loss_limit_usd": cfg.daily_loss_limit_usd,
+        "poll_seconds": cfg.poll_seconds,
+        "allow_flip": cfg.allow_flip,
+        "allow_increase": cfg.allow_increase,
+        "feed_ok": feed_ok,
+        # Secrets are masked to plain booleans-as-strings, never echoed.
+        "feed_token": "set" if cfg.feed_token else "(not set)",
+        "api_secret": "set" if cfg.api_secret else "(not set)",
+        "api_url": cfg.api_url,
+        "account_address": cfg.account_address,
+        "open_positions": open_positions,
+        "realized_today": realized_today,
+        "log": _recent_log(30),
+        "config_present": config_present,
+    }
+
+
+def _config_summary_masked() -> Dict[str, Any]:
+    """A safe (secret-masked) echo of the current config for POST responses."""
+    cfg = config.CFG
+    return {
+        "base_capital": cfg.base_capital,
+        "risk_per_trade_pct": cfg.risk_per_trade_pct,
+        "size_usd": cfg.size_usd,
+        "leverage": cfg.leverage,
+        "isolated": cfg.isolated,
+        "max_open": cfg.max_open,
+        "daily_loss_limit_usd": cfg.daily_loss_limit_usd,
+        "dry_run": cfg.dry_run,
+        "poll_seconds": cfg.poll_seconds,
+        "allow_flip": cfg.allow_flip,
+        "allow_increase": cfg.allow_increase,
+        "api_url": cfg.api_url,
+        "account_address": cfg.account_address,
+        "feed_token": "set" if cfg.feed_token else "(not set)",
+        "api_secret": "set" if cfg.api_secret else "(not set)",
+        "mode": "LIVE" if cfg.configured_live() else "DRY-RUN",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Start / Stop
+# ---------------------------------------------------------------------------
+def _start_loop() -> Tuple[bool, str]:
+    global _loop_thread, _stop_event
+    with _loop_lock:
+        if _is_running():
+            return False, "Bot is already running."
+
+        config.reload()  # pick up the latest .env
+        cfg = config.CFG
+
+        # Going LIVE requires the keys. In DRY-RUN we allow starting freely so
+        # the user can watch the mechanics (mock feed) before configuring.
+        if not cfg.dry_run:
+            missing = []
+            if not cfg.feed_token:
+                missing.append("feed token")
+            if not cfg.account_address:
+                missing.append("account address")
+            if not cfg.api_secret:
+                missing.append("API secret")
+            if missing:
+                return (
+                    False,
+                    "Cannot start LIVE without: "
+                    + ", ".join(missing)
+                    + ". Set them or keep DRY-RUN on.",
+                )
+
+        ev = threading.Event()
+        t = threading.Thread(
+            target=run_loop, args=(ev, _log_sink), name="observer-loop", daemon=True
+        )
+        _stop_event = ev
+        _loop_thread = t
+        t.start()
+        return True, "LIVE — real orders will be placed." if not cfg.dry_run else "Started in DRY-RUN (no real orders)."
+
+
+def _stop_loop() -> Tuple[bool, str]:
+    global _loop_thread, _stop_event
+    with _loop_lock:
+        if not _is_running():
+            return False, "Bot is not running."
+        if _stop_event is not None:
+            _stop_event.set()
+        return True, "Stopping… the loop will save state and wind down."
+
+
+# ---------------------------------------------------------------------------
+# /api/test — best-effort connectivity checks (fast timeouts, never blocks)
+# ---------------------------------------------------------------------------
+def _test_feed() -> Dict[str, Any]:
+    cfg = config.CFG
+    if not cfg.feed_token:
+        return {"ok": None, "message": "No feed token set (DEV mock mode)."}
+    url = f"{cfg.api_url.rstrip('/')}/api/signals/feed?since=0"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {cfg.feed_token}",
+            "X-Feed-Token": cfg.feed_token,
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=6) as resp:
+            code = resp.getcode()
+        if code == 200:
+            return {"ok": True, "message": "Feed token accepted (HTTP 200)."}
+        return {"ok": False, "message": f"Feed returned HTTP {code}."}
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401 or exc.code == 403:
+            return {"ok": False, "message": f"Feed rejected the token (HTTP {exc.code})."}
+        return {"ok": False, "message": f"Feed returned HTTP {exc.code}."}
+    except urllib.error.URLError as exc:
+        return {"ok": False, "message": f"Could not reach the feed: {exc.reason}."}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "message": f"Feed check failed: {exc}."}
+
+
+def _test_hyperliquid() -> Dict[str, Any]:
+    cfg = config.CFG
+    if not cfg.account_address:
+        return {"ok": None, "message": "No account address set."}
+    # Best-effort: hit the public Info endpoint with clearinghouseState.
+    url = "https://api.hyperliquid.xyz/info"
+    payload = json.dumps(
+        {"type": "clearinghouseState", "user": cfg.account_address}
+    ).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=6) as resp:
+            code = resp.getcode()
+            raw = resp.read()
+        if code != 200:
+            return {"ok": False, "message": f"Hyperliquid Info returned HTTP {code}."}
+        data = json.loads(raw.decode("utf-8"))
+        if isinstance(data, dict) and "marginSummary" in data:
+            try:
+                acct_val = data["marginSummary"].get("accountValue")
+            except Exception:  # noqa: BLE001
+                acct_val = None
+            if acct_val is not None:
+                return {
+                    "ok": True,
+                    "message": f"Account reachable (value ≈ {acct_val} USDC).",
+                }
+            return {"ok": True, "message": "Account reachable."}
+        return {"ok": True, "message": "Hyperliquid reachable (no positions yet)."}
+    except urllib.error.URLError as exc:
+        return {"ok": False, "message": f"Could not reach Hyperliquid: {exc.reason}."}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "message": f"Hyperliquid check failed: {exc}."}
+
+
+def _run_tests() -> Dict[str, Any]:
+    return {"feed": _test_feed(), "hyperliquid": _test_hyperliquid()}
+
+
+# ---------------------------------------------------------------------------
+# HTTP handler
+# ---------------------------------------------------------------------------
+class Handler(BaseHTTPRequestHandler):
+    server_version = "ObserverUI/1.0"
+
+    # Quieten the default request logging (it spams the console).
+    def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
+        pass
+
+    # -- helpers --------------------------------------------------------- #
+    def _send_json(self, obj: Any, status: int = 200) -> None:
+        body = json.dumps(obj).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_html(self, html: str, status: int = 200) -> None:
+        body = html.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _read_json_body(self) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        try:
+            length = int(self.headers.get("Content-Length", "0") or "0")
+        except ValueError:
+            return None, "bad Content-Length"
+        if length <= 0:
+            return {}, None
+        if length > 1_000_000:
+            return None, "request too large"
+        try:
+            raw = self.rfile.read(length)
+            data = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            return None, "body is not valid JSON"
+        if not isinstance(data, dict):
+            return None, "body must be a JSON object"
+        return data, None
+
+    # -- routes ---------------------------------------------------------- #
+    def do_GET(self) -> None:  # noqa: N802
+        path = self.path.split("?", 1)[0]
+        try:
+            if path == "/":
+                self._send_html(_PAGE)
+            elif path == "/api/status":
+                self._send_json(_build_status())
+            else:
+                self._send_json({"error": "not found"}, status=404)
+        except BrokenPipeError:
+            pass
+        except Exception as exc:  # noqa: BLE001
+            self._safe_500(exc)
+
+    def do_POST(self) -> None:  # noqa: N802
+        path = self.path.split("?", 1)[0]
+        try:
+            if path == "/api/config":
+                self._handle_config()
+            elif path == "/api/start":
+                ok, msg = _start_loop()
+                self._send_json(
+                    {"ok": ok, "message": msg, "status": _build_status()},
+                    status=200 if ok else 409,
+                )
+            elif path == "/api/stop":
+                ok, msg = _stop_loop()
+                self._send_json(
+                    {"ok": ok, "message": msg, "status": _build_status()},
+                    status=200 if ok else 409,
+                )
+            elif path == "/api/test":
+                self._send_json({"ok": True, "results": _run_tests()})
+            else:
+                self._send_json({"error": "not found"}, status=404)
+        except BrokenPipeError:
+            pass
+        except Exception as exc:  # noqa: BLE001
+            self._safe_500(exc)
+
+    def _handle_config(self) -> None:
+        body, err = self._read_json_body()
+        if err is not None:
+            self._send_json({"ok": False, "error": err}, status=400)
+            return
+        updates, errors = _validate_and_normalise(body or {})
+        if errors:
+            self._send_json({"ok": False, "errors": errors}, status=400)
+            return
+        if not updates:
+            # Nothing to change — don't touch (or create) the .env file.
+            self._send_json(
+                {
+                    "ok": True,
+                    "message": "No changes to save.",
+                    "config": _config_summary_masked(),
+                }
+            )
+            return
+        try:
+            _write_env_file(ENV_PATH, updates)
+        except OSError as exc:
+            self._send_json(
+                {"ok": False, "error": f"could not write .env: {exc}"}, status=500
+            )
+            return
+        config.reload()
+        self._send_json(
+            {
+                "ok": True,
+                "message": "Saved. Changes apply on the next Start.",
+                "config": _config_summary_masked(),
+            }
+        )
+
+    def _safe_500(self, exc: Exception) -> None:
+        try:
+            self._send_json({"error": "internal error", "detail": str(exc)}, status=500)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+# ---------------------------------------------------------------------------
+# The page (self-contained, on-brand). No external assets.
+# ---------------------------------------------------------------------------
+_PAGE = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>The Observer — Auto-Execution Bot</title>
+<style>
+  :root{
+    --bg:#080808; --panel:#0f0f10; --panel2:#141416; --line:#222226;
+    --ink:#e9e7e2; --mut:#8b8a86; --gold:#e7c876; --gold2:#caa14a;
+    --green:#7fe0a6; --red:#f0a98a; --amber:#e7c876;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0;background:var(--bg);color:var(--ink);
+    font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    -webkit-font-smoothing:antialiased;
+  }
+  a{color:var(--gold)}
+  .wrap{max-width:980px;margin:0 auto;padding:24px 20px 64px}
+  header{
+    display:flex;align-items:center;gap:16px;flex-wrap:wrap;
+    padding:18px 0 22px;border-bottom:1px solid var(--line);margin-bottom:24px;
+  }
+  .brand{font-size:18px;font-weight:600;letter-spacing:.3px}
+  .brand .dot{color:var(--gold)}
+  .brand small{display:block;color:var(--mut);font-size:12px;font-weight:400;letter-spacing:.2px}
+  .spacer{flex:1}
+  .pill{
+    padding:8px 16px;border-radius:999px;font-weight:700;letter-spacing:.6px;
+    font-size:13px;border:1px solid var(--line);
+  }
+  .pill.dry{background:rgba(231,200,118,.10);color:var(--amber);border-color:rgba(231,200,118,.35)}
+  .pill.live{background:rgba(127,224,166,.10);color:var(--green);border-color:rgba(127,224,166,.35)}
+  .pill.run{font-size:11px;padding:6px 12px}
+  .pill.run.on{color:var(--green);border-color:rgba(127,224,166,.35)}
+  .pill.run.off{color:var(--mut)}
+  button{
+    font:inherit;cursor:pointer;border-radius:10px;border:1px solid var(--line);
+    background:var(--panel2);color:var(--ink);padding:10px 18px;transition:.12s;
+  }
+  button:hover{border-color:var(--gold2)}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  .btn-start{background:linear-gradient(180deg,#1a2e22,#12201a);color:var(--green);border-color:rgba(127,224,166,.35);font-weight:700}
+  .btn-stop{background:linear-gradient(180deg,#2e1a1a,#201212);color:var(--red);border-color:rgba(240,169,138,.35);font-weight:700}
+  .btn-gold{background:linear-gradient(180deg,#241f12,#191509);color:var(--gold);border-color:rgba(231,200,118,.35);font-weight:700}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  @media(max-width:760px){.grid{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px 18px 20px}
+  .card h2{margin:0 0 4px;font-size:13px;letter-spacing:.6px;text-transform:uppercase;color:var(--gold)}
+  .card .sub{color:var(--mut);font-size:12px;margin:0 0 14px}
+  .field{margin-bottom:14px}
+  .field label{display:block;font-size:12px;color:var(--mut);margin-bottom:5px;letter-spacing:.2px}
+  .field input[type=text],.field input[type=password],.field input[type=number]{
+    width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:9px;
+    color:var(--ink);padding:9px 11px;font:inherit;
+  }
+  .field input:focus{outline:none;border-color:var(--gold2)}
+  .hint{color:var(--gold);font-size:12px;margin-top:6px}
+  .help{color:var(--mut);font-size:11px;margin-top:5px}
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .toggle{display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none}
+  .toggle input{display:none}
+  .sw{width:42px;height:24px;border-radius:999px;background:#26261f;border:1px solid var(--line);position:relative;transition:.15s;flex:0 0 auto}
+  .sw::after{content:"";position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:var(--mut);transition:.15s}
+  .toggle input:checked + .sw{background:rgba(231,200,118,.25);border-color:var(--gold2)}
+  .toggle input:checked + .sw::after{left:20px;background:var(--gold)}
+  .toggle .tl{font-size:13px}
+  .toggle .td{display:block;color:var(--mut);font-size:11px}
+  .row-actions{display:flex;gap:10px;margin-top:8px;flex-wrap:wrap}
+  .full{grid-column:1/-1}
+  .status-line{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px dashed var(--line)}
+  .status-line:last-child{border-bottom:none}
+  .status-line .k{color:var(--mut)}
+  .status-line .v{font-weight:600}
+  .v.green{color:var(--green)} .v.red{color:var(--red)} .v.gold{color:var(--gold)}
+  .poslist{margin:8px 0 0;padding:0;list-style:none}
+  .poslist li{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px dashed var(--line)}
+  .poslist .long{color:var(--green)} .poslist .short{color:var(--red)}
+  .empty{color:var(--mut);font-style:italic;font-size:12px}
+  .log{
+    background:#050505;border:1px solid var(--line);border-radius:10px;padding:10px 12px;
+    height:220px;overflow:auto;font-size:11.5px;line-height:1.55;white-space:pre-wrap;color:#cfd2c9;
+  }
+  .testbox{margin-top:10px;font-size:12px}
+  .testbox .tr{display:flex;gap:8px;padding:4px 0}
+  .testbox .ico{width:16px;flex:0 0 auto}
+  .ok{color:var(--green)} .fail{color:var(--red)} .na{color:var(--mut)}
+  .toast{
+    position:fixed;left:50%;bottom:24px;transform:translateX(-50%);
+    background:var(--panel2);border:1px solid var(--gold2);color:var(--ink);
+    padding:11px 18px;border-radius:10px;opacity:0;pointer-events:none;transition:.2s;font-size:13px;max-width:90%;
+  }
+  .toast.show{opacity:1}
+  .toast.err{border-color:rgba(240,169,138,.5)}
+  .foot{color:var(--mut);font-size:11px;margin-top:26px;text-align:center;line-height:1.7}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand">The Observer<span class="dot">.</span><small>Auto-Execution Bot · runs on your machine</small></div>
+    <div class="spacer"></div>
+    <span id="runPill" class="pill run off">● STOPPED</span>
+    <span id="modePill" class="pill dry">DRY-RUN</span>
+    <button id="toggleBtn" class="btn-start" onclick="toggleRun()">Start</button>
+  </header>
+
+  <div class="grid">
+    <!-- LEFT: settings -->
+    <div class="card">
+      <h2>Capital &amp; sizing</h2>
+      <p class="sub">You only need your base capital — the bot mirrors the model's proportion per trade.</p>
+      <div class="two">
+        <div class="field">
+          <label>Base capital (USD)</label>
+          <input type="number" id="BASE_CAPITAL" step="any" oninput="recalcHint()" />
+        </div>
+        <div class="field">
+          <label>Risk per trade (%)</label>
+          <input type="number" id="RISK_PER_TRADE_PCT" step="any" oninput="recalcHint()" />
+        </div>
+      </div>
+      <div class="two">
+        <div class="field">
+          <label>Leverage (x)</label>
+          <input type="number" id="LEVERAGE" step="any" />
+        </div>
+        <div class="field">
+          <label class="toggle"><input type="checkbox" id="ISOLATED" /><span class="sw"></span>
+            <span class="tl">Isolated margin<span class="td">what the model uses (off = cross)</span></span></label>
+        </div>
+      </div>
+      <div class="hint" id="sizeHint">≈ — margin per trade</div>
+    </div>
+
+    <div class="card">
+      <h2>Your Hyperliquid account</h2>
+      <p class="sub">Use an API / agent wallet key — it can trade but NOT withdraw.</p>
+      <div class="field">
+        <label>Account address (0x…)</label>
+        <input type="text" id="HL_ACCOUNT_ADDRESS" placeholder="0x…" autocomplete="off" spellcheck="false" />
+      </div>
+      <div class="field">
+        <label>API / agent wallet secret</label>
+        <input type="password" id="HL_API_SECRET" placeholder="•••• (leave blank to keep)" autocomplete="new-password" spellcheck="false" />
+        <div class="help">Never paste your main wallet's seed phrase. This is a trade-only key.</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Signals</h2>
+      <p class="sub">Your personal feed token. Leave blank to run the local DEV mock.</p>
+      <div class="field">
+        <label>Feed token</label>
+        <input type="password" id="OBSERVER_FEED_TOKEN" placeholder="•••• (leave blank to keep)" autocomplete="new-password" spellcheck="false" />
+      </div>
+      <div class="field">
+        <label>API URL</label>
+        <input type="text" id="OBSERVER_API_URL" spellcheck="false" />
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Risk limits</h2>
+      <p class="sub">Local guards — closes are never blocked.</p>
+      <div class="two">
+        <div class="field">
+          <label>Max open positions</label>
+          <input type="number" id="MAX_OPEN" step="1" />
+        </div>
+        <div class="field">
+          <label>Daily loss limit (USD)</label>
+          <input type="number" id="DAILY_LOSS_LIMIT_USD" step="any" />
+        </div>
+      </div>
+    </div>
+
+    <div class="card full">
+      <h2>Safety</h2>
+      <p class="sub">DRY-RUN is the default. Going LIVE places real orders on your account.</p>
+      <div class="two">
+        <div class="field">
+          <label class="toggle"><input type="checkbox" id="DRY_RUN" /><span class="sw"></span>
+            <span class="tl">DRY-RUN (simulate only)<span class="td">ON = no real orders. Turn OFF to go LIVE.</span></span></label>
+        </div>
+        <div class="field">
+          <label>Poll interval (seconds)</label>
+          <input type="number" id="POLL_SECONDS" step="1" />
+        </div>
+      </div>
+      <div class="two">
+        <div class="field">
+          <label class="toggle"><input type="checkbox" id="ALLOW_FLIP" /><span class="sw"></span>
+            <span class="tl">Allow flips<span class="td">close current, open the opposite side</span></span></label>
+        </div>
+        <div class="field">
+          <label class="toggle"><input type="checkbox" id="ALLOW_INCREASE" /><span class="sw"></span>
+            <span class="tl">Allow increases<span class="td">add to an existing position</span></span></label>
+        </div>
+      </div>
+      <div class="row-actions">
+        <button class="btn-gold" onclick="saveConfig()">Save settings</button>
+        <button onclick="runTest()">Test connection</button>
+      </div>
+      <div class="testbox" id="testbox"></div>
+    </div>
+
+    <!-- STATUS -->
+    <div class="card full">
+      <h2>Live status</h2>
+      <p class="sub">Polls every 3s · everything stays on your machine.</p>
+      <div class="grid">
+        <div>
+          <div class="status-line"><span class="k">State</span><span class="v" id="stState">—</span></div>
+          <div class="status-line"><span class="k">Mode</span><span class="v" id="stMode">—</span></div>
+          <div class="status-line"><span class="k">Margin / trade</span><span class="v" id="stSize">—</span></div>
+          <div class="status-line"><span class="k">Realized today</span><span class="v" id="stRealized">—</span></div>
+          <div class="status-line"><span class="k">Feed token</span><span class="v" id="stFeed">—</span></div>
+          <div class="status-line"><span class="k">API secret</span><span class="v" id="stSecret">—</span></div>
+          <h2 style="margin-top:16px">Open positions</h2>
+          <ul class="poslist" id="posList"><li class="empty">none</li></ul>
+        </div>
+        <div>
+          <h2>Log</h2>
+          <div class="log" id="log"><span class="empty">No log lines yet. Press Start.</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <p class="foot">
+    Non-custodial · your keys live only in your local <code>.env</code>, never sent anywhere.<br/>
+    Bound to 127.0.0.1 — not reachable from your network. Close this tab and the bot keeps running until you Stop it or close the program.
+  </p>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const FIELDS = ["BASE_CAPITAL","RISK_PER_TRADE_PCT","LEVERAGE","ISOLATED",
+  "HL_ACCOUNT_ADDRESS","HL_API_SECRET","OBSERVER_FEED_TOKEN","OBSERVER_API_URL",
+  "MAX_OPEN","DAILY_LOSS_LIMIT_USD","DRY_RUN","POLL_SECONDS","ALLOW_FLIP","ALLOW_INCREASE"];
+const BOOLS = ["ISOLATED","DRY_RUN","ALLOW_FLIP","ALLOW_INCREASE"];
+const SECRETS = ["HL_API_SECRET","OBSERVER_FEED_TOKEN"];
+let running = false;
+
+function $(id){return document.getElementById(id);}
+
+function toast(msg, isErr){
+  const t=$("toast"); t.textContent=msg;
+  t.className="toast show"+(isErr?" err":"");
+  clearTimeout(t._h); t._h=setTimeout(()=>{t.className="toast";},3200);
+}
+
+function recalcHint(){
+  const cap=parseFloat($("BASE_CAPITAL").value)||0;
+  const pct=parseFloat($("RISK_PER_TRADE_PCT").value)||0;
+  const m=(cap*pct/100);
+  $("sizeHint").textContent = m>0
+    ? "≈ $"+m.toLocaleString(undefined,{maximumFractionDigits:2})+" margin per trade ("+pct+"% of your capital)"
+    : "≈ — margin per trade";
+}
+
+// Prefill forms from /api/status (secrets shown as placeholder only).
+async function prefill(){
+  try{
+    const r=await fetch("/api/status"); const s=await r.json();
+    $("BASE_CAPITAL").value=s.base_capital;
+    $("RISK_PER_TRADE_PCT").value=s.risk_per_trade_pct;
+    $("LEVERAGE").value=s.leverage;
+    $("ISOLATED").checked=!!s.isolated;
+    $("HL_ACCOUNT_ADDRESS").value=s.account_address||"";
+    $("OBSERVER_API_URL").value=s.api_url||"";
+    $("MAX_OPEN").value=s.max_open;
+    $("DAILY_LOSS_LIMIT_USD").value=s.daily_loss_limit_usd;
+    $("DRY_RUN").checked=!!s.dry_run;
+    $("POLL_SECONDS").value=s.poll_seconds;
+    $("ALLOW_FLIP").checked=!!s.allow_flip;
+    $("ALLOW_INCREASE").checked=!!s.allow_increase;
+    // Secrets: never receive the value. Show a placeholder if already set.
+    $("HL_API_SECRET").placeholder = s.api_secret==="set" ? "•••• (set — leave blank to keep)" : "(not set)";
+    $("OBSERVER_FEED_TOKEN").placeholder = s.feed_token==="set" ? "•••• (set — leave blank to keep)" : "(not set — DEV mock)";
+    recalcHint();
+  }catch(e){ /* page still usable */ }
+}
+
+function collect(){
+  const body={};
+  for(const id of FIELDS){
+    const el=$(id);
+    if(BOOLS.includes(id)) body[id]=el.checked;
+    else body[id]=el.value;
+  }
+  // Don't send empty secrets (means keep existing).
+  for(const k of SECRETS){ if(!body[k]) delete body[k]; }
+  return body;
+}
+
+async function saveConfig(){
+  try{
+    const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(collect())});
+    const d=await r.json();
+    if(d.ok){ toast(d.message||"Saved."); $("HL_API_SECRET").value=""; $("OBSERVER_FEED_TOKEN").value=""; prefill(); }
+    else { toast((d.errors&&d.errors.join(" · "))||d.error||"Save failed.", true); }
+  }catch(e){ toast("Save failed: "+e, true); }
+}
+
+async function runTest(){
+  const box=$("testbox"); box.innerHTML='<div class="tr na">Testing…</div>';
+  try{
+    const r=await fetch("/api/test",{method:"POST"}); const d=await r.json();
+    const res=d.results||{};
+    box.innerHTML = row("Feed token", res.feed) + row("Hyperliquid account", res.hyperliquid);
+  }catch(e){ box.innerHTML='<div class="tr fail">Test failed: '+e+'</div>'; }
+}
+function row(label, r){
+  if(!r) return "";
+  let cls="na", ico="•";
+  if(r.ok===true){cls="ok";ico="✓";} else if(r.ok===false){cls="fail";ico="✕";}
+  return '<div class="tr '+cls+'"><span class="ico">'+ico+'</span><span><b>'+label+':</b> '+(r.message||"")+'</span></div>';
+}
+
+async function toggleRun(){
+  const btn=$("toggleBtn"); btn.disabled=true;
+  try{
+    const ep = running ? "/api/stop" : "/api/start";
+    const r=await fetch(ep,{method:"POST"}); const d=await r.json();
+    toast(d.message||"", !d.ok);
+    if(d.status) render(d.status);
+  }catch(e){ toast("Action failed: "+e, true); }
+  finally{ btn.disabled=false; }
+}
+
+function render(s){
+  running = !!s.running;
+  const rp=$("runPill");
+  rp.textContent = running ? "● RUNNING" : "● STOPPED";
+  rp.className = "pill run "+(running?"on":"off");
+  const mp=$("modePill");
+  mp.textContent = s.mode;
+  mp.className = "pill "+(s.mode==="LIVE"?"live":"dry");
+  const tb=$("toggleBtn");
+  tb.textContent = running ? "Stop" : "Start";
+  tb.className = running ? "btn-stop" : "btn-start";
+
+  $("stState").textContent = running ? "running" : "stopped";
+  $("stState").className = "v "+(running?"green":"");
+  $("stMode").textContent = s.mode;
+  $("stMode").className = "v "+(s.mode==="LIVE"?"green":"gold");
+  $("stSize").textContent = "$"+Number(s.size_usd).toLocaleString(undefined,{maximumFractionDigits:2})+" @ "+s.leverage+"x";
+  const rt=Number(s.realized_today)||0;
+  $("stRealized").textContent = (rt>=0?"+":"")+"$"+rt.toFixed(2);
+  $("stRealized").className = "v "+(rt>0?"green":(rt<0?"red":""));
+  $("stFeed").textContent = s.feed_token;
+  $("stFeed").className = "v "+(s.feed_token==="set"?"green":"");
+  $("stSecret").textContent = s.api_secret;
+  $("stSecret").className = "v "+(s.api_secret==="set"?"green":"");
+
+  const pl=$("posList");
+  if(s.open_positions && s.open_positions.length){
+    pl.innerHTML = s.open_positions.map(p=>
+      '<li><span>'+p.coin+'</span><span class="'+p.side+'">'+p.side.toUpperCase()+'</span></li>').join("");
+  } else { pl.innerHTML='<li class="empty">none</li>'; }
+
+  const lg=$("log");
+  if(s.log && s.log.length){
+    const atBottom = lg.scrollHeight - lg.scrollTop - lg.clientHeight < 40;
+    lg.textContent = s.log.join("\n");
+    if(atBottom) lg.scrollTop = lg.scrollHeight;
+  }
+}
+
+async function poll(){
+  try{ const r=await fetch("/api/status"); render(await r.json()); }catch(e){}
+}
+
+prefill();
+poll();
+setInterval(poll, 3000);
+</script>
+</body>
+</html>
+"""
+
+
+# ---------------------------------------------------------------------------
+# Server bootstrap
+# ---------------------------------------------------------------------------
+def serve() -> None:
+    httpd = ThreadingHTTPServer((HOST, PORT), Handler)
+    url = f"http://{HOST}:{PORT}/"
+    print("=" * 64)
+    print("  The Observer — Auto-Execution Bot · local control panel")
+    print(f"  Open this in your browser:  {url}")
+    print("  (bound to 127.0.0.1 only — not reachable from your network)")
+    print("  Press Ctrl-C here to shut the panel down.")
+    print("=" * 64)
+    try:
+        webbrowser.open(url)
+    except Exception:
+        pass
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        print("\nShutting down the control panel…")
+    finally:
+        if _stop_event is not None:
+            _stop_event.set()
+        httpd.shutdown()
+        httpd.server_close()
+
+
+if __name__ == "__main__":
+    serve()
