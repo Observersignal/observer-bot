@@ -58,8 +58,11 @@ class Config:
     api_secret: str
 
     # Sizing & leverage
-    size_usd: float
+    base_capital: float        # capital base total del cliente (USD)
+    risk_per_trade_pct: float  # % del capital base por operación (1.0 = misma proporción que el modelo)
+    size_usd: float            # margen por op derivado = base_capital * pct/100 (o SIZE_USD si se fuerza)
     leverage: float
+    isolated: bool             # margen isolated (True) vs cross (False)
 
     # Risk limits
     max_open: int
@@ -101,8 +104,10 @@ class Config:
             f"  api url          : {self.api_url}\n"
             f"  account address  : {addr}\n"
             f"  api secret       : {secret}\n"
+            f"  base capital     : {self.base_capital:g} USD\n"
             f"  size per trade   : {self.size_usd:g} USD margin "
-            f"@ {self.leverage:g}x leverage\n"
+            f"({self.risk_per_trade_pct:g}% of base) @ {self.leverage:g}x "
+            f"{'isolated' if self.isolated else 'cross'}\n"
             f"  max open         : {self.max_open}\n"
             f"  daily loss limit : {self.daily_loss_limit_usd:g} USD\n"
             f"  poll interval    : {self.poll_seconds}s\n"
@@ -113,13 +118,22 @@ class Config:
 
 
 def load_config() -> Config:
+    # Sizing PROPORCIONAL: el cliente solo mete su capital base y el bot replica TU proporción
+    # ($100 sobre $10.000 = 1% por op). 5.000 -> 50/op; 20.000 -> 200/op. Sin el cut del 50%.
+    base_capital = _get_float("BASE_CAPITAL", 10000.0)
+    risk_pct = _get_float("RISK_PER_TRADE_PCT", 1.0)
+    size_override = _get_float("SIZE_USD", 0.0)  # 0 = derivar del capital base (avanzado: forzar $ fijos)
+    size_usd = size_override if size_override > 0 else round(base_capital * risk_pct / 100.0, 2)
     return Config(
         api_url=_get_str("OBSERVER_API_URL", "https://www.theobserversignalbot.com"),
         feed_token=_get_str("OBSERVER_FEED_TOKEN"),
         account_address=_get_str("HL_ACCOUNT_ADDRESS"),
         api_secret=_get_str("HL_API_SECRET"),
-        size_usd=_get_float("SIZE_USD", 100.0),
+        base_capital=base_capital,
+        risk_per_trade_pct=risk_pct,
+        size_usd=size_usd,
         leverage=_get_float("LEVERAGE", 10.0),
+        isolated=_get_bool("ISOLATED", True),
         max_open=_get_int("MAX_OPEN", 10),
         daily_loss_limit_usd=_get_float("DAILY_LOSS_LIMIT_USD", 300.0),
         dry_run=_get_bool("DRY_RUN", True),

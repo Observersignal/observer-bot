@@ -188,8 +188,9 @@ class Executor:
             )
 
         try:
-            # SDK: set per-coin leverage. update_leverage(leverage, coin, is_cross)
-            self.exchange.update_leverage(int(leverage), coin)
+            # SDK: leverage + modo de margen. update_leverage(leverage, coin, is_cross).
+            # is_cross=False -> ISOLATED (lo que sigue el modelo); True -> cross.
+            self.exchange.update_leverage(int(leverage), coin, not self.cfg.isolated)
             # SDK: market open. market_open(coin, is_buy, sz, px=None, slippage=...)
             result = self.exchange.market_open(coin, is_buy, size)
             log.info("OPEN %s %s size=%s -> %s", side.upper(), coin, size, result)

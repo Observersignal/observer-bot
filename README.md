@@ -51,11 +51,14 @@ Open `.env` and fill in:
 | `OBSERVER_FEED_TOKEN` | The token you received with your subscription           |
 | `HL_ACCOUNT_ADDRESS`  | Your main Hyperliquid wallet address (`0x...`)          |
 | `HL_API_SECRET`       | Your **API / agent wallet** private key (trade-only)    |
-| `SIZE_USD`            | Margin (USD) per trade                                  |
-| `LEVERAGE`            | Leverage per trade                                      |
+| `BASE_CAPITAL`        | **Your total base capital (USD).** The bot sizes each trade as a proportion of this — same proportion as the model (1% per trade). Enter `5000` → $50/trade; `20000` → $200/trade. |
+| `LEVERAGE`            | Leverage per trade (default 10)                         |
+| `ISOLATED`            | Isolated margin (default true) — what the model uses    |
 | `MAX_OPEN`            | Max positions open at once                              |
 | `DAILY_LOSS_LIMIT_USD`| Stop opening new trades after this much daily loss      |
 
+You only need to set `BASE_CAPITAL` — the per-trade size scales to your account automatically (no "cut").
+Advanced: `RISK_PER_TRADE_PCT` (default 1.0%) tunes the proportion, and `SIZE_USD` can force a fixed margin.
 All other settings have sensible defaults — see the comments in `.env.example`.
 
 ## Run a DRY-RUN first (recommended)
