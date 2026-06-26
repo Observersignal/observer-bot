@@ -627,27 +627,61 @@ _PAGE = r"""<!DOCTYPE html>
   .grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}
   @media(max-width:720px){.grid{grid-template-columns:1fr}}
 
-  /* ---- Getting-started callout ---- */
-  .intro{
-    background:linear-gradient(180deg,rgba(231,200,118,.06),rgba(231,200,118,.02));
-    border:1px solid rgba(231,200,118,.30);border-radius:14px;
-    padding:18px 20px;margin-bottom:22px;
+  /* ---- View toggling: wizard vs control panel ---- */
+  .view{display:none}
+  .view.active{display:block}
+
+  /* ---- Wizard shell ---- */
+  .wizard{max-width:680px;margin:0 auto}
+  .progress{margin-bottom:22px}
+  .progress .ptop{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px}
+  .progress .pstep{font-size:12px;letter-spacing:.6px;text-transform:uppercase;color:var(--gold);font-weight:700}
+  .progress .pskip{font-size:12px;color:var(--mut)}
+  .progress .pskip a{cursor:pointer}
+  .pbar{height:6px;background:var(--panel2);border:1px solid var(--line);border-radius:999px;overflow:hidden}
+  .pbar > i{display:block;height:100%;width:20%;background:linear-gradient(90deg,var(--gold2),var(--gold));border-radius:999px;transition:width .25s ease}
+
+  .step{display:none}
+  .step.active{display:block}
+  .step .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px 22px 24px}
+  .step h1{margin:0 0 6px;font-size:18px;font-weight:600;letter-spacing:.2px;color:var(--ink)}
+  .step .lede{color:var(--mut);font-size:13px;margin:0 0 18px;line-height:1.6}
+
+  /* "What is this?" + "How to get it" blocks */
+  .whatis{
+    background:var(--panel2);border:1px solid var(--line);border-radius:10px;
+    padding:12px 14px;margin:0 0 16px;font-size:12.5px;line-height:1.6;color:var(--ink);
   }
-  .intro h2{margin:0 0 4px;font-size:13px;letter-spacing:.6px;text-transform:uppercase;color:var(--gold)}
-  .intro p.lead{color:var(--mut);font-size:12.5px;margin:0 0 12px}
-  .intro ol{margin:0;padding-left:0;list-style:none;counter-reset:step}
-  .intro li{
-    position:relative;padding:6px 0 6px 36px;font-size:13px;line-height:1.5;
+  .whatis b{color:var(--gold);font-weight:600}
+  .howto{
+    background:linear-gradient(180deg,rgba(231,200,118,.06),rgba(231,200,118,.02));
+    border:1px solid rgba(231,200,118,.30);border-radius:12px;
+    padding:14px 16px 14px;margin:0 0 18px;
+  }
+  .howto .ht{font-size:11px;letter-spacing:.6px;text-transform:uppercase;color:var(--gold);font-weight:700;margin-bottom:8px}
+  .howto ol{margin:0;padding-left:0;list-style:none;counter-reset:step}
+  .howto li{
+    position:relative;padding:5px 0 5px 34px;font-size:12.5px;line-height:1.5;
     counter-increment:step;color:var(--ink);
   }
-  .intro li::before{
-    content:counter(step);position:absolute;left:0;top:5px;
-    width:24px;height:24px;border-radius:50%;
+  .howto li::before{
+    content:counter(step);position:absolute;left:0;top:4px;
+    width:22px;height:22px;border-radius:50%;
     background:rgba(231,200,118,.12);border:1px solid rgba(231,200,118,.4);color:var(--gold);
-    font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;
+    font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;
   }
-  .intro li b{color:var(--gold);font-weight:600}
-  .intro li code{background:rgba(231,200,118,.10);border:1px solid rgba(231,200,118,.25);border-radius:5px;padding:1px 6px;color:var(--gold);font-size:12px}
+  .howto li b{color:var(--gold);font-weight:600}
+  .howto li code{background:rgba(231,200,118,.10);border:1px solid rgba(231,200,118,.25);border-radius:5px;padding:1px 6px;color:var(--gold);font-size:12px}
+  .howto .htnote{display:block;margin-top:10px;color:var(--mut);font-size:11.5px;line-height:1.55}
+
+  .warn{
+    display:flex;gap:9px;align-items:flex-start;
+    background:rgba(240,169,138,.08);border:1px solid rgba(240,169,138,.35);
+    border-radius:10px;padding:11px 13px;margin:14px 0 0;
+    color:var(--red);font-size:12px;line-height:1.55;
+  }
+  .warn .si{flex:0 0 auto;font-size:14px;line-height:1.2}
+  .warn b{color:var(--red);font-weight:700}
 
   /* ---- Reassurance note (DRY-RUN is safe) ---- */
   .safe-note{
@@ -656,9 +690,32 @@ _PAGE = r"""<!DOCTYPE html>
     border-radius:10px;padding:10px 13px;margin:14px 0 0;
     color:var(--green);font-size:12px;line-height:1.5;
   }
+  .safe-note.big{padding:14px 16px;font-size:13px}
   .safe-note .si{flex:0 0 auto;font-size:14px;line-height:1.2}
   .safe-note b{color:var(--green);font-weight:700}
 
+  /* ---- Collapsible "advanced" section ---- */
+  details.adv{margin:14px 0 0;border:1px solid var(--line);border-radius:10px;background:var(--panel2);overflow:hidden}
+  details.adv > summary{
+    cursor:pointer;list-style:none;padding:11px 14px;font-size:12px;color:var(--gold);
+    font-weight:600;letter-spacing:.3px;user-select:none;
+  }
+  details.adv > summary::-webkit-details-marker{display:none}
+  details.adv > summary::before{content:"▸ ";color:var(--gold2)}
+  details.adv[open] > summary::before{content:"▾ "}
+  details.adv .advbody{padding:4px 14px 14px;border-top:1px solid var(--line)}
+
+  /* ---- Wizard nav ---- */
+  .wnav{display:flex;gap:10px;margin-top:22px;align-items:center;flex-wrap:wrap}
+  .wnav .spacer{flex:1}
+  .wnav .btn-back{background:var(--panel2)}
+  .stepmsg{
+    margin-top:14px;font-size:12.5px;padding:9px 13px;border-radius:8px;display:none;line-height:1.5;
+    background:rgba(240,169,138,.08);border:1px solid rgba(240,169,138,.30);color:var(--red);
+  }
+  .stepmsg.show{display:block}
+
+  /* ---- Shared card / fields ---- */
   .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px 18px 20px}
   .card h2{margin:0 0 4px;font-size:13px;letter-spacing:.6px;text-transform:uppercase;color:var(--gold)}
   .card .sub{color:var(--mut);font-size:12px;margin:0 0 14px}
@@ -741,6 +798,8 @@ _PAGE = r"""<!DOCTYPE html>
   .toast.show{opacity:1}
   .toast.err{border-color:rgba(240,169,138,.5)}
   .foot{color:var(--mut);font-size:11px;margin-top:26px;text-align:center;line-height:1.7}
+  .relink{font-size:12px;color:var(--mut);margin-top:18px;text-align:center}
+  .relink a{cursor:pointer}
 </style>
 </head>
 <body>
@@ -753,126 +812,223 @@ _PAGE = r"""<!DOCTYPE html>
     <button id="toggleBtn" class="btn-start" onclick="toggleRun()">Start</button>
   </header>
 
-  <div class="intro">
-    <h2>Getting started</h2>
-    <p class="lead">New here? Follow these five steps in order. You can do it all from this page.</p>
-    <ol>
-      <li>Paste your <b>Feed token</b> — you get it on Telegram: send <code>/bot</code> to The Observer access bot and it hands you the token.</li>
-      <li>Add <b>your Hyperliquid account</b>: your wallet address plus a trade-only API / agent wallet key (it can trade but can't withdraw).</li>
-      <li>Set <b>your capital</b> — the bot sizes every trade to it automatically. You never size trades by hand.</li>
-      <li>Press <b>Test connection</b> to check everything is right.</li>
-      <li>Press <b>Start</b> with <b>DRY-RUN ON</b> to watch it safely first, then turn DRY-RUN OFF to go live.</li>
-    </ol>
-    <div class="safe-note"><span class="si">●</span><span>Safe to explore — while <b>DRY-RUN is ON</b> the bot only simulates. Nothing happens to your money until you turn it OFF.</span></div>
+  <!-- ============================================================= -->
+  <!-- VIEW 1 · SETUP WIZARD                                          -->
+  <!-- ============================================================= -->
+  <div id="wizardView" class="view">
+    <div class="wizard">
+      <div class="progress">
+        <div class="ptop">
+          <span class="pstep" id="progLabel">Step 1 of 5</span>
+          <span class="pskip"><a onclick="showPanel()">Skip to control panel →</a></span>
+        </div>
+        <div class="pbar"><i id="progBar"></i></div>
+      </div>
+
+      <!-- STEP 1 · Welcome -->
+      <section class="step" data-step="1">
+        <div class="card">
+          <h1>Welcome — let's set up your bot</h1>
+          <p class="lede">It runs on <b>YOUR</b> machine, with <b>YOUR</b> keys — we never touch your funds.
+            The whole thing takes about 5 minutes.</p>
+          <div class="safe-note big"><span class="si">●</span><span>You can stay in <b>DRY-RUN (practice mode)</b> the whole way through — the bot only
+            simulates and places <b>no real orders</b> until you decide to go live.</span></div>
+          <div class="wnav">
+            <div class="spacer"></div>
+            <button class="btn-gold" onclick="next()">Start setup →</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- STEP 2 · Feed token -->
+      <section class="step" data-step="2">
+        <div class="card">
+          <h1>Your signal access</h1>
+          <p class="lede">A personal key that lets your bot receive The Observer's trading signals.</p>
+          <div class="whatis"><b>What is this?</b> Your personal key to receive the trading signals. The bot uses it to
+            pull each signal as it fires.</div>
+          <div class="howto">
+            <div class="ht">How to get it</div>
+            <ol>
+              <li>Open <b>Telegram</b>.</li>
+              <li>Message <b>The Observer</b> access bot.</li>
+              <li>Send <code>/bot</code>.</li>
+              <li>It replies with your token — <b>copy it</b> and paste it below.</li>
+            </ol>
+            <span class="htnote">No token yet? Leave it blank — you can try the bot in a safe local demo first and
+              add your token later.</span>
+          </div>
+          <div class="field">
+            <label>Feed token</label>
+            <input type="password" id="OBSERVER_FEED_TOKEN" placeholder="•••• (leave blank to keep)" autocomplete="new-password" spellcheck="false" />
+            <div class="help">Paste the token Telegram gave you. Leave blank to run the local demo (DEV mock).</div>
+          </div>
+          <details class="adv">
+            <summary>Advanced (optional)</summary>
+            <div class="advbody">
+              <div class="field">
+                <label>API URL</label>
+                <input type="text" id="OBSERVER_API_URL" spellcheck="false" />
+                <div class="help">Where the bot fetches signals from. The default is already correct — leave it as is
+                  unless you're told otherwise.</div>
+              </div>
+            </div>
+          </details>
+          <div class="stepmsg" id="msg2"></div>
+          <div class="wnav">
+            <button class="btn-back" onclick="back()">← Back</button>
+            <div class="spacer"></div>
+            <button class="btn-gold" onclick="next()">Next →</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- STEP 3 · Hyperliquid account -->
+      <section class="step" data-step="3">
+        <div class="card">
+          <h1>Your Hyperliquid account</h1>
+          <p class="lede">The bot trades on <b>your</b> account using a trade-only key.</p>
+          <div class="whatis"><b>What is this?</b> The bot trades on YOUR Hyperliquid account using a
+            <b>trade-only key</b> — a key that can place trades but <b>cannot withdraw</b> your money.</div>
+          <div class="howto">
+            <div class="ht">How to get it</div>
+            <ol>
+              <li>In Hyperliquid, open the <b>API</b> / agent-wallet section (in your account menu).</li>
+              <li>Create / generate a new <b>API wallet</b> (also called an agent wallet) and authorize it.</li>
+              <li>Copy its <b>private key</b> and paste it in <b>API wallet key</b> below.</li>
+              <li>Copy your <b>main wallet address</b> (the <code>0x…</code> that holds your funds) into <b>Account address</b>.</li>
+            </ol>
+          </div>
+          <div class="warn"><span class="si">⚠</span><span><b>Never</b> paste your main wallet's seed phrase or private key — only the
+            API / agent wallet key. If it ever leaks, nobody can withdraw your funds with it.</span></div>
+          <div class="field">
+            <label>Account address (0x…)</label>
+            <input type="text" id="HL_ACCOUNT_ADDRESS" placeholder="0x…" autocomplete="off" spellcheck="false" />
+            <div class="help">Your Hyperliquid wallet address — the public <b>0x…</b> that holds your funds.</div>
+          </div>
+          <div class="field">
+            <label>API wallet key</label>
+            <input type="password" id="HL_API_SECRET" placeholder="•••• (leave blank to keep)" autocomplete="new-password" spellcheck="false" />
+            <div class="help"><b>NOT your main wallet key.</b> This is the private key of the API / agent wallet you
+              created above. It can place trades but <b>cannot withdraw your funds</b>.</div>
+          </div>
+          <div class="stepmsg" id="msg3"></div>
+          <div class="wnav">
+            <button class="btn-back" onclick="back()">← Back</button>
+            <div class="spacer"></div>
+            <button class="btn-gold" onclick="next()">Next →</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- STEP 4 · Size & limits -->
+      <section class="step" data-step="4">
+        <div class="card">
+          <h1>Your size &amp; limits</h1>
+          <p class="lede">Just enter your capital — the bot sizes every trade for you.</p>
+          <div class="whatis"><b>What is this?</b> Enter your total trading capital — the bot automatically sizes
+            each trade to the same proportion as the model (<b>1%</b>). You don't size trades by hand.</div>
+          <div class="field">
+            <label>Base capital (USD)</label>
+            <input type="number" id="BASE_CAPITAL" step="any" oninput="recalcHint()" />
+            <div class="hint" id="sizeHint">≈ — per trade</div>
+            <div class="help">Your total trading capital. The bot risks the same proportion per trade as the model
+              (1%). Enter <b>5000</b> and it uses about <b>$50</b> per trade; enter <b>20000</b> and it uses about
+              <b>$200</b>. You never size each trade by hand.</div>
+          </div>
+          <details class="adv">
+            <summary>Advanced (optional)</summary>
+            <div class="advbody">
+              <div class="field">
+                <label>Risk per trade (%)</label>
+                <input type="number" id="RISK_PER_TRADE_PCT" step="any" oninput="recalcHint()" />
+                <div class="help">How much of your capital each trade uses as margin. <b>1%</b> mirrors the model.
+                  Lower it to trade smaller.</div>
+              </div>
+              <div class="field">
+                <label>Leverage (x)</label>
+                <input type="number" id="LEVERAGE" step="any" />
+                <div class="help">Leverage applied to each trade. The model uses <b>10x</b>.</div>
+              </div>
+              <div class="field">
+                <label class="toggle"><input type="checkbox" id="ISOLATED" /><span class="sw"></span>
+                  <span class="tl">Isolated margin<span class="td">Each position keeps its own margin (what the model
+                    uses), so one bad trade can't drain the others. Off = cross margin (shared).</span></span></label>
+              </div>
+              <div class="field">
+                <label>Max open positions</label>
+                <input type="number" id="MAX_OPEN" step="1" />
+                <div class="help">The most positions the bot will hold at the same time.</div>
+              </div>
+              <div class="field">
+                <label>Daily loss limit (USD)</label>
+                <input type="number" id="DAILY_LOSS_LIMIT_USD" step="any" />
+                <div class="help">If your realized loss today reaches this amount, the bot stops opening <b>new</b>
+                  trades for the rest of the day. It still closes existing ones.</div>
+              </div>
+            </div>
+          </details>
+          <div class="stepmsg" id="msg4"></div>
+          <div class="wnav">
+            <button class="btn-back" onclick="back()">← Back</button>
+            <div class="spacer"></div>
+            <button class="btn-gold" onclick="next()">Next →</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- STEP 5 · Test & start -->
+      <section class="step" data-step="5">
+        <div class="card">
+          <h1>Test &amp; start</h1>
+          <p class="lede">Save your setup, check the connections, and you're ready.</p>
+          <div class="field">
+            <label class="toggle green"><input type="checkbox" id="DRY_RUN" /><span class="sw"></span>
+              <span class="tl">DRY-RUN (practice mode)<span class="td">ON = the bot only simulates and places NO real
+                orders. Start here. Turn OFF only when you're ready for real trading.</span></span></label>
+          </div>
+          <div class="safe-note big"><span class="si">●</span><span>Leave this <b>ON</b> to practice safely — nothing happens to your money.
+            You can come back and turn it off whenever you're ready.</span></div>
+          <details class="adv">
+            <summary>Advanced (optional)</summary>
+            <div class="advbody">
+              <div class="field">
+                <label>Poll interval (seconds)</label>
+                <input type="number" id="POLL_SECONDS" step="1" />
+                <div class="help">How often the bot checks for new signals. <b>4</b> is fine.</div>
+              </div>
+              <div class="field">
+                <label class="toggle"><input type="checkbox" id="ALLOW_FLIP" /><span class="sw"></span>
+                  <span class="tl">Allow flips<span class="td">If a signal flips direction, close the current position
+                    and open the opposite one.</span></span></label>
+              </div>
+              <div class="field">
+                <label class="toggle"><input type="checkbox" id="ALLOW_INCREASE" /><span class="sw"></span>
+                  <span class="tl">Allow increases<span class="td">Add to a position you already hold if the signal
+                    says so. Off by default (more conservative).</span></span></label>
+              </div>
+            </div>
+          </details>
+          <div class="row-actions">
+            <button class="btn-gold" onclick="saveAndTest()">Save &amp; test</button>
+            <button onclick="finishToPanel()">Finish — go to the panel →</button>
+          </div>
+          <div class="result" id="saveResult"></div>
+          <div class="testbox" id="testbox"></div>
+          <div class="wnav">
+            <button class="btn-back" onclick="back()">← Back</button>
+            <div class="spacer"></div>
+          </div>
+        </div>
+      </section>
+    </div>
   </div>
 
-  <div class="grid">
-    <!-- LEFT: settings -->
-    <div class="card">
-      <h2>Capital &amp; sizing</h2>
-      <p class="sub">You only need your base capital — the bot mirrors the model's proportion per trade.</p>
-      <div class="field">
-        <label>Base capital (USD)</label>
-        <input type="number" id="BASE_CAPITAL" step="any" oninput="recalcHint()" />
-        <div class="help">Your total trading capital. The bot risks the same proportion per trade as the model (1%). Enter <b>5000</b> and it uses about <b>$50</b> per trade; enter <b>20000</b> and it uses about <b>$200</b>. You never size each trade by hand.</div>
-      </div>
-      <div class="field">
-        <label>Risk per trade (%)</label>
-        <input type="number" id="RISK_PER_TRADE_PCT" step="any" oninput="recalcHint()" />
-        <div class="help">How much of your capital each trade uses as margin. <b>1%</b> mirrors the model. Lower it to trade smaller.</div>
-      </div>
-      <div class="field">
-        <label>Leverage (x)</label>
-        <input type="number" id="LEVERAGE" step="any" />
-        <div class="help">Leverage applied to each trade. The model uses <b>10x</b>.</div>
-      </div>
-      <div class="field">
-        <label class="toggle"><input type="checkbox" id="ISOLATED" /><span class="sw"></span>
-          <span class="tl">Isolated margin<span class="td">Each position keeps its own margin (what the model uses), so one bad trade can't drain the others. Off = cross margin (shared).</span></span></label>
-      </div>
-      <div class="hint" id="sizeHint">≈ — margin per trade</div>
-    </div>
-
-    <div class="card">
-      <h2>Your Hyperliquid account</h2>
-      <p class="sub">Use an API / agent wallet key — it can trade but NOT withdraw.</p>
-      <div class="field">
-        <label>Account address (0x…)</label>
-        <input type="text" id="HL_ACCOUNT_ADDRESS" placeholder="0x…" autocomplete="off" spellcheck="false" />
-        <div class="help">Your Hyperliquid wallet address — the public <b>0x…</b> that holds your funds.</div>
-      </div>
-      <div class="field">
-        <label>API / agent wallet secret</label>
-        <input type="password" id="HL_API_SECRET" placeholder="•••• (leave blank to keep)" autocomplete="new-password" spellcheck="false" />
-        <div class="help"><b>NOT your main wallet key.</b> In Hyperliquid open the API section and create an <b>API wallet</b> (also called an agent wallet) — it can place trades but <b>cannot withdraw your funds</b>. Copy its private key here. Even if it ever leaks, no one can take your money with it.</div>
-      </div>
-    </div>
-
-    <div class="card">
-      <h2>Signals</h2>
-      <p class="sub">Your personal feed token. Leave blank to run the local DEV mock.</p>
-      <div class="field">
-        <label>Feed token</label>
-        <input type="password" id="OBSERVER_FEED_TOKEN" placeholder="•••• (leave blank to keep)" autocomplete="new-password" spellcheck="false" />
-        <div class="help">Your personal key to receive the signals. Get it on Telegram: send <b>/bot</b> to The Observer access bot and it gives you the token. Leave blank to try the bot in a local demo first.</div>
-      </div>
-      <div class="field">
-        <label>API URL</label>
-        <input type="text" id="OBSERVER_API_URL" spellcheck="false" />
-        <div class="help">Where the bot fetches signals from. The default is already correct — leave it as is unless you're told otherwise.</div>
-      </div>
-    </div>
-
-    <div class="card">
-      <h2>Risk limits</h2>
-      <p class="sub">Local guards — closes are never blocked.</p>
-      <div class="field">
-        <label>Max open positions</label>
-        <input type="number" id="MAX_OPEN" step="1" />
-        <div class="help">The most positions the bot will hold at the same time.</div>
-      </div>
-      <div class="field">
-        <label>Daily loss limit (USD)</label>
-        <input type="number" id="DAILY_LOSS_LIMIT_USD" step="any" />
-        <div class="help">If your realized loss today reaches this amount, the bot stops opening <b>new</b> trades for the rest of the day. It still closes existing ones.</div>
-      </div>
-    </div>
-
-    <div class="card full">
-      <h2>Safety</h2>
-      <p class="sub">DRY-RUN is the default. Going LIVE places real orders on your account.</p>
-      <div class="two">
-        <div class="field">
-          <label class="toggle green"><input type="checkbox" id="DRY_RUN" /><span class="sw"></span>
-            <span class="tl">DRY-RUN (practice mode)<span class="td">ON = the bot only simulates and places NO real orders. Start here. Turn OFF only when you're ready for real trading.</span></span></label>
-        </div>
-        <div class="field">
-          <label>Poll interval (seconds)</label>
-          <input type="number" id="POLL_SECONDS" step="1" />
-          <div class="help">How often the bot checks for new signals. <b>4</b> is fine.</div>
-        </div>
-      </div>
-      <div class="two">
-        <div class="field">
-          <label class="toggle"><input type="checkbox" id="ALLOW_FLIP" /><span class="sw"></span>
-            <span class="tl">Allow flips<span class="td">If a signal flips direction, close the current position and open the opposite one.</span></span></label>
-        </div>
-        <div class="field">
-          <label class="toggle"><input type="checkbox" id="ALLOW_INCREASE" /><span class="sw"></span>
-            <span class="tl">Allow increases<span class="td">Add to a position you already hold if the signal says so. Off by default (more conservative).</span></span></label>
-        </div>
-      </div>
-      <div class="safe-note"><span class="si">●</span><span>Safe to explore — in <b>DRY-RUN</b> nothing happens to your money. Leave it ON until you've watched the bot and trust it.</span></div>
-      <div class="row-actions">
-        <button class="btn-gold" onclick="saveConfig()">Save settings</button>
-        <button onclick="runTest()">Test connection</button>
-      </div>
-      <div class="result" id="saveResult"></div>
-      <div class="testbox" id="testbox"></div>
-    </div>
-
-    <!-- STATUS -->
-    <div class="card full">
+  <!-- ============================================================= -->
+  <!-- VIEW 2 · CONTROL PANEL                                         -->
+  <!-- ============================================================= -->
+  <div id="panelView" class="view">
+    <div class="card full" style="margin-bottom:18px">
       <h2>Live status</h2>
       <p class="sub">Polls every 3s · everything stays on your machine.</p>
       <div class="grid">
@@ -891,7 +1047,12 @@ _PAGE = r"""<!DOCTYPE html>
           <div class="log" id="log"><span class="empty">No log lines yet. Press Start.</span></div>
         </div>
       </div>
+      <div class="row-actions" style="margin-top:16px">
+        <button onclick="runTest()">Test connection</button>
+      </div>
+      <div class="testbox" id="testboxPanel"></div>
     </div>
+    <div class="relink">Need to change something? <a onclick="showWizard()">Edit settings / re-run setup →</a></div>
   </div>
 
   <p class="foot">
@@ -907,7 +1068,12 @@ const FIELDS = ["BASE_CAPITAL","RISK_PER_TRADE_PCT","LEVERAGE","ISOLATED",
   "MAX_OPEN","DAILY_LOSS_LIMIT_USD","DRY_RUN","POLL_SECONDS","ALLOW_FLIP","ALLOW_INCREASE"];
 const BOOLS = ["ISOLATED","DRY_RUN","ALLOW_FLIP","ALLOW_INCREASE"];
 const SECRETS = ["HL_API_SECRET","OBSERVER_FEED_TOKEN"];
+const TOTAL_STEPS = 5;
 let running = false;
+let curStep = 1;
+let prefilled = false;         // /api/status loaded into the form at least once
+let feedTokenSet = false;      // does .env already have a feed token?
+let addressSet = false;        // does .env already have an account address?
 
 function $(id){return document.getElementById(id);}
 
@@ -922,14 +1088,115 @@ function recalcHint(){
   const pct=parseFloat($("RISK_PER_TRADE_PCT").value)||0;
   const m=(cap*pct/100);
   $("sizeHint").textContent = m>0
-    ? "≈ $"+m.toLocaleString(undefined,{maximumFractionDigits:2})+" margin per trade ("+pct+"% of your capital)"
-    : "≈ — margin per trade";
+    ? "≈ $"+m.toLocaleString(undefined,{maximumFractionDigits:2})+" per trade ("+pct+"% of your capital)"
+    : "≈ — per trade";
 }
 
+// ---------------------------------------------------------------------------
+// View switching (wizard <-> control panel). No routes change; purely visual.
+// ---------------------------------------------------------------------------
+function showWizard(){
+  curStep = 1;
+  renderStep();
+  $("panelView").classList.remove("active");
+  $("wizardView").classList.add("active");
+  window.scrollTo(0,0);
+}
+function showPanel(){
+  $("wizardView").classList.remove("active");
+  $("panelView").classList.add("active");
+  window.scrollTo(0,0);
+}
+function finishToPanel(){ showPanel(); }
+
+// Pick the initial view from /api/status: if neither a feed token nor an
+// account address is set, the bot isn't configured yet -> show the wizard.
+function chooseInitialView(){
+  if(feedTokenSet || addressSet){ showPanel(); }
+  else { showWizard(); }
+}
+
+// ---------------------------------------------------------------------------
+// Wizard step navigation
+// ---------------------------------------------------------------------------
+function renderStep(){
+  document.querySelectorAll(".step").forEach(s=>{
+    s.classList.toggle("active", Number(s.getAttribute("data-step"))===curStep);
+  });
+  $("progLabel").textContent = "Step "+curStep+" of "+TOTAL_STEPS;
+  $("progBar").style.width = Math.round(curStep/TOTAL_STEPS*100)+"%";
+  // Clear any stale step messages when moving.
+  for(let i=2;i<=5;i++){ const m=$("msg"+i); if(m) m.className="stepmsg"; }
+}
+
+function stepError(step, text){
+  const m=$("msg"+step);
+  if(m){ m.textContent=text; m.className="stepmsg show"; }
+}
+
+// Validate the current step's fields. Step 1 is skippable (try the demo first).
+function validateStep(step){
+  if(step===2){
+    // Feed token may be blank (demo). If left blank AND nothing already set,
+    // we simply allow it — the user opted into the local demo.
+    return true;
+  }
+  if(step===3){
+    const addr = $("HL_ACCOUNT_ADDRESS").value.trim();
+    const sec  = $("HL_API_SECRET").value.trim();
+    // Allow fully blank (keep DRY-RUN demo). But if they typed an address, it
+    // must look like a 0x… hex string; warn on an obvious mistake.
+    if(addr && !/^0x[0-9a-fA-F]{6,}$/.test(addr)){
+      stepError(3, "That account address doesn't look right — it should start with 0x followed by hex characters.");
+      return false;
+    }
+    // If they entered an address but no key (and none is stored), nudge them —
+    // but still allow proceeding so they can practice in DRY-RUN.
+    if(addr && !sec && !addressSet){
+      // Soft nudge only; not a hard block.
+    }
+    return true;
+  }
+  if(step===4){
+    const cap = $("BASE_CAPITAL").value.trim();
+    if(cap===""){
+      stepError(4, "Please enter your base capital (e.g. 5000) so the bot can size each trade.");
+      return false;
+    }
+    const n = parseFloat(cap);
+    if(isNaN(n) || n<=0){
+      stepError(4, "Base capital must be a positive number, like 5000.");
+      return false;
+    }
+    return true;
+  }
+  return true;
+}
+
+function next(){
+  if(!validateStep(curStep)) return;
+  if(curStep < TOTAL_STEPS){
+    curStep++;
+    renderStep();
+    window.scrollTo(0,0);
+  }
+}
+function back(){
+  if(curStep > 1){
+    curStep--;
+    renderStep();
+    window.scrollTo(0,0);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Prefill forms from /api/status (secrets shown as placeholder only).
+// ---------------------------------------------------------------------------
 async function prefill(){
   try{
     const r=await fetch("/api/status"); const s=await r.json();
+    feedTokenSet = s.feed_token==="set";
+    addressSet   = !!(s.account_address && String(s.account_address).trim());
     $("BASE_CAPITAL").value=s.base_capital;
     $("RISK_PER_TRADE_PCT").value=s.risk_per_trade_pct;
     $("LEVERAGE").value=s.leverage;
@@ -946,7 +1213,12 @@ async function prefill(){
     $("HL_API_SECRET").placeholder = s.api_secret==="set" ? "•••• (set — leave blank to keep)" : "(not set)";
     $("OBSERVER_FEED_TOKEN").placeholder = s.feed_token==="set" ? "•••• (set — leave blank to keep)" : "(not set — DEV mock)";
     recalcHint();
-  }catch(e){ /* page still usable */ }
+    // On the very first load, choose which view to show.
+    if(!prefilled){ prefilled=true; chooseInitialView(); }
+  }catch(e){
+    // Page still usable; default to the wizard if we couldn't read status.
+    if(!prefilled){ prefilled=true; showWizard(); }
+  }
 }
 
 function collect(){
@@ -971,6 +1243,7 @@ function showResult(good, msg, fix){
   if(good) el._h=setTimeout(()=>{el.className="result";}, 6000);
 }
 
+// POST the whole collected config. Returns true on success.
 async function saveConfig(){
   try{
     const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(collect())});
@@ -978,15 +1251,23 @@ async function saveConfig(){
     if(d.ok){
       $("HL_API_SECRET").value=""; $("OBSERVER_FEED_TOKEN").value=""; prefill();
       showResult(true, "Settings saved. They'll apply the next time you press Start.");
+      return true;
     } else {
-      // Turn validation errors into plain language; keep raw codes out of view.
       console.error("Save failed:", d.errors||d.error);
       showResult(false, friendlySaveError(d), "Check the highlighted value and try Save again.");
+      return false;
     }
   }catch(e){
     console.error("Save request failed:", e);
     showResult(false, "Couldn't save your settings.", "Make sure the control panel is still running and try again.");
+    return false;
   }
+}
+
+// Step 5 primary action: save the full config, then run the connectivity test.
+async function saveAndTest(){
+  const ok = await saveConfig();
+  if(ok){ await runTest("testbox"); }
 }
 
 // Map server validation errors to a single human sentence (no field codes).
@@ -1001,8 +1282,11 @@ function friendlySaveError(d){
   return "Couldn't save your settings.";
 }
 
-async function runTest(){
-  const box=$("testbox");
+// Run the connectivity test. `target` is the id of the testbox to render into
+// (the wizard's step-5 box or the control-panel box).
+async function runTest(target){
+  const boxId = (typeof target==="string") ? target : "testbox";
+  const box=$(boxId);
   box.innerHTML='<div class="tr na"><span class="ico">•</span><span>Checking your connection…</span></div>';
   try{
     const r=await fetch("/api/test",{method:"POST"}); const d=await r.json();
@@ -1106,6 +1390,7 @@ async function poll(){
   try{ const r=await fetch("/api/status"); render(await r.json()); }catch(e){}
 }
 
+renderStep();
 prefill();
 poll();
 setInterval(poll, 3000);
@@ -1113,7 +1398,6 @@ setInterval(poll, 3000);
 </body>
 </html>
 """
-
 
 # ---------------------------------------------------------------------------
 # Server bootstrap
