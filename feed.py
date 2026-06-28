@@ -16,6 +16,7 @@ the mechanics can be watched end-to-end in DRY-RUN without the feed existing.
 from __future__ import annotations
 
 import logging
+import time
 from typing import List, Tuple
 
 import requests
@@ -48,7 +49,12 @@ def _poll_mock(cursor: str) -> Tuple[List[dict], str]:
     if _mock_pos >= len(_MOCK_SCRIPT):
         # Sequence exhausted: nothing more to emit. The bot keeps idling.
         return [], cursor
-    sig = _MOCK_SCRIPT[_mock_pos]
+    # Emit a COPY with a FRESH timestamp so the demo signal is never "stale"
+    # under the staleness guard (the script's tiny fixed ts would otherwise be
+    # treated as ancient and OPEN signals would be skipped). Don't mutate the
+    # module-level script.
+    sig = dict(_MOCK_SCRIPT[_mock_pos])
+    sig["ts"] = int(time.time() * 1000)
     _mock_pos += 1
     log.info(
         "DEV MOCK MODE — emitting scripted signal %s/%s: %s %s %s",

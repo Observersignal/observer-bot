@@ -19,6 +19,7 @@ import logging
 import signal
 import sys
 import threading
+import time
 from typing import Callable, Optional
 
 import config
@@ -65,7 +66,24 @@ def _handle_event(
     coin = ev["coin"]
     side = ev["side"]
 
+    # Staleness guard. If the bot was offline and reconnects, an OPEN signal
+    # may be far older than the live entry — chasing a moved entry is risky.
+    # CLOSE always runs regardless of age (a late close is safer than an open
+    # position left dangling). Age is in minutes for human-readable logs.
+    now_ms = int(time.time() * 1000)
+    age_ms = now_ms - int(ev.get("ts") or now_ms)
+    stale = age_ms > cfg.max_signal_age_min * 60_000
+    age_min = age_ms / 60_000.0
+
     if event == "open":
+        if stale:
+            log.warning(
+                "skip OPEN %s %s — signal too old (%.0f min), entry already moved",
+                side,
+                coin,
+                age_min,
+            )
+            return
         allowed, reason = risk.can_open(st, cfg)
         if not allowed:
             log.warning("skip OPEN %s %s — blocked: %s", side, coin, reason)
@@ -75,6 +93,7 @@ def _handle_event(
             st.record_open(coin, side)
 
     elif event == "close":
+        # ALWAYS execute, regardless of age — closing late beats not closing.
         res = ex.close(coin)
         if res.get("ok"):
             st.record_close(coin)
@@ -82,6 +101,17 @@ def _handle_event(
     elif event == "flip":
         if not cfg.allow_flip:
             log.info("skip FLIP %s — ALLOW_FLIP is false", coin)
+            return
+        if stale:
+            # A late close is good; a late re-entry is not. Close only.
+            log.warning(
+                "FLIP %s stale (%.0f min) — closing only, not reopening",
+                coin,
+                age_min,
+            )
+            res = ex.close(coin)
+            if res.get("ok"):
+                st.record_close(coin)
             return
         # A flip opens a new position; honour the open-side risk checks.
         allowed, reason = risk.can_open(st, cfg)
@@ -101,6 +131,14 @@ def _handle_event(
     elif event == "increase":
         if not cfg.allow_increase:
             log.info("skip INCREASE %s — ALLOW_INCREASE is false", coin)
+            return
+        if stale:
+            log.warning(
+                "skip INCREASE %s %s — signal too old (%.0f min), entry already moved",
+                side,
+                coin,
+                age_min,
+            )
             return
         allowed, reason = risk.can_open(st, cfg)
         if not allowed:
@@ -180,6 +218,15 @@ def run_loop(
             log.error("could not start executor: %s", exc)
             return 1
 
+        # First-run BASELINE: on a brand-new install the cursor is empty, which
+        # against the real feed (since=0) returns the ENTIRE signal history. We
+        # must NEVER replay that history as live trades. The FIRST SUCCESSFUL poll
+        # in the loop adopts its cursor WITHOUT acting; only signals after it are
+        # traded. Done inside the loop (via this flag) so a failed first poll just
+        # retries on the next iteration — there is no window for a history replay.
+        # (Skipped in DEV MOCK MODE — the demo is meant to replay its script.)
+        need_baseline = (not cfg.mock_mode and not st.cursor)
+
         log.info(
             "entering main loop (poll every %ss). %s",
             cfg.poll_seconds,
@@ -190,20 +237,32 @@ def run_loop(
             try:
                 events, new_cursor = feed.poll(st.cursor)
 
-                for ev in events:
-                    sid = ev["id"]
-                    if st.seen(sid):
-                        continue
-                    try:
-                        _handle_event(ev, st, ex, cfg)
-                    except Exception as exc:
-                        # One bad signal must never kill the loop.
-                        log.error("error handling signal %s: %s", sid, exc)
-                    finally:
-                        st.mark_processed(sid)
+                if need_baseline:
+                    # Primera lectura correcta = baseline: adoptamos el cursor SIN
+                    # actuar sobre el histórico. Si el poll falla, seguimos en modo
+                    # baseline y se reintenta — nunca se reproduce el histórico.
+                    st.cursor = new_cursor
+                    st.save()
+                    need_baseline = False
+                    log.info(
+                        "Baseline set (cursor=%r). Acting only on NEW signals from here.",
+                        st.cursor,
+                    )
+                else:
+                    for ev in events:
+                        sid = ev["id"]
+                        if st.seen(sid):
+                            continue
+                        try:
+                            _handle_event(ev, st, ex, cfg)
+                        except Exception as exc:
+                            # One bad signal must never kill the loop.
+                            log.error("error handling signal %s: %s", sid, exc)
+                        finally:
+                            st.mark_processed(sid)
 
-                st.cursor = new_cursor
-                st.save()
+                    st.cursor = new_cursor
+                    st.save()
 
             except Exception as exc:
                 # Defensive catch-all so the loop survives any unexpected error.

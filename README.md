@@ -96,6 +96,104 @@ You only need to set `BASE_CAPITAL` — the per-trade size scales to your accoun
 Advanced: `RISK_PER_TRADE_PCT` (default 1.0%) tunes the proportion, and `SIZE_USD` can force a fixed margin.
 All other settings have sensible defaults — see the comments in `.env.example`.
 
+## Run it 24/7 (a small VPS)
+
+**Why not just a phone or laptop?** Phones and laptops sleep, throttle
+background apps, and reboot for updates — and while they're asleep the bot can
+miss a **close**. A small **VPS** (a tiny always-on cloud server, about
+**$4–6/month**) stays running around the clock so your closes always fire.
+
+You don't need to be technical. Here's the whole thing, step by step:
+
+1. **Get a small Linux VPS.** Any provider works (Hetzner, DigitalOcean,
+   Vultr…). The cheapest **1 GB RAM, Ubuntu** box is plenty. You'll get an IP
+   address and a username (usually `ubuntu` or `root`).
+
+2. **Copy the bot onto it.** From your own machine, either copy the folder:
+
+   ```bash
+   scp -r observer-bot user@YOUR_VPS_IP:~/observer-bot
+   ```
+
+   …or, once the repo is public, clone it on the VPS instead:
+
+   ```bash
+   git clone <repo-url> observer-bot
+   ```
+
+3. **Install the dependencies** (on the VPS):
+
+   ```bash
+   cd ~/observer-bot
+   pip install -r requirements.txt
+   ```
+
+4. **Configure it.** Two ways — pick one:
+
+   - **Control panel over an SSH tunnel** (easiest): from *your* machine, open a
+     tunnel and start the panel on the VPS, then open it locally in your browser:
+
+     ```bash
+     # On your machine: forward the VPS's panel port to your localhost
+     ssh -L 8765:127.0.0.1:8765 user@YOUR_VPS_IP
+     # Now, inside that SSH session (on the VPS):
+     python app.py
+     ```
+
+     Open **http://127.0.0.1:8765** in your own browser — you're securely
+     controlling the panel running on the VPS. Fill in your settings and Save.
+     The panel stays bound to the VPS's localhost; the tunnel is the only way in.
+
+   - **Edit the `.env` by hand** (no browser): `cp .env.example .env` and fill in
+     your values with a text editor (`nano .env`).
+
+5. **Keep it running with systemd** so it restarts on crash and survives reboots.
+   Create the service file:
+
+   ```bash
+   sudo nano /etc/systemd/system/observer-bot.service
+   ```
+
+   Paste this, replacing **`youruser`** with your VPS username (and the path if
+   you put the bot somewhere else):
+
+   ```ini
+   [Unit]
+   Description=The Observer Auto-Execution Bot
+   After=network-online.target
+   Wants=network-online.target
+
+   [Service]
+   Type=simple
+   User=youruser
+   WorkingDirectory=/home/youruser/observer-bot
+   ExecStart=/usr/bin/python3 bot.py
+   Restart=always
+   RestartSec=5
+
+   [Install]
+   WantedBy=multi-user.target
+   ```
+
+   Then enable and start it (it now comes back automatically after any reboot):
+
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now observer-bot
+   ```
+
+   Watch what it's doing live:
+
+   ```bash
+   journalctl -u observer-bot -f
+   ```
+
+> **Two reminders that still apply on a VPS:**
+> - The **STOP kill-switch** works exactly the same — `touch STOP` in the bot's
+>   folder halts new opens without killing the service; `rm STOP` resumes.
+> - Keep **`DRY_RUN=true`** until you've watched it run and you're happy with the
+>   behaviour. Flip to live only when you're ready.
+
 ## Run a DRY-RUN first (recommended)
 
 `DRY_RUN=true` is the default. In dry-run the bot **places no real orders** —

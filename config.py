@@ -97,6 +97,7 @@ class Config:
     poll_seconds: int
     allow_flip: bool
     allow_increase: bool
+    max_signal_age_min: float  # on reconnect, OPEN signals older than this are skipped
 
     @property
     def mock_mode(self) -> bool:
@@ -137,6 +138,7 @@ class Config:
             f"  poll interval    : {self.poll_seconds}s\n"
             f"  allow flip       : {self.allow_flip}\n"
             f"  allow increase   : {self.allow_increase}\n"
+            f"  max signal age   : {self.max_signal_age_min:g} min (stale OPENs skipped on reconnect)\n"
             f"  dry run          : {self.dry_run}"
         )
 
@@ -164,6 +166,7 @@ def load_config() -> Config:
         poll_seconds=_get_int("POLL_SECONDS", 4),
         allow_flip=_get_bool("ALLOW_FLIP", True),
         allow_increase=_get_bool("ALLOW_INCREASE", False),
+        max_signal_age_min=_get_float("MAX_SIGNAL_AGE_MIN", 15.0),
     )
 
 
