@@ -58,6 +58,24 @@ def _banner(cfg: config.Config) -> None:
     log.info(line)
 
 
+def _apply_realized(res: dict, st: state_mod.State) -> None:
+    """
+    Feed the realized PnL of a close into the daily-loss counter.
+
+    Live closes carry a `realized` field (USD, negative when losing); a flip
+    carries it nested under `close`. Dry-run and any close where PnL couldn't
+    be read leave it as None — we simply don't touch the counter then. This is
+    what makes the daily-loss stop in risk.can_open() actually fire.
+    """
+    if not isinstance(res, dict):
+        return
+    realized = res.get("realized")
+    if realized is None and isinstance(res.get("close"), dict):
+        realized = res["close"].get("realized")
+    if realized is not None:
+        st.add_realized(realized)
+
+
 def _handle_event(
     ev: dict, st: state_mod.State, ex: Executor, cfg: config.Config
 ) -> None:
@@ -97,6 +115,7 @@ def _handle_event(
         res = ex.close(coin)
         if res.get("ok"):
             st.record_close(coin)
+            _apply_realized(res, st)
 
     elif event == "flip":
         if not cfg.allow_flip:
@@ -112,6 +131,7 @@ def _handle_event(
             res = ex.close(coin)
             if res.get("ok"):
                 st.record_close(coin)
+                _apply_realized(res, st)
             return
         # A flip opens a new position; honour the open-side risk checks.
         allowed, reason = risk.can_open(st, cfg)
@@ -123,9 +143,11 @@ def _handle_event(
             res = ex.close(coin)
             if res.get("ok"):
                 st.record_close(coin)
+                _apply_realized(res, st)
             return
         res = ex.flip(coin, side, cfg.size_usd, cfg.leverage)
         if res.get("ok"):
+            _apply_realized(res, st)  # realized comes from the close leg
             st.record_open(coin, side)
 
     elif event == "increase":

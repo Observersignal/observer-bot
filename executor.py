@@ -13,7 +13,8 @@ adapter only logs exactly what it WOULD do and returns a fake-ok result.
 from __future__ import annotations
 
 import logging
-from typing import Optional
+import time
+from typing import List, Optional
 
 from config import Config
 
@@ -156,6 +157,73 @@ class Executor:
         return round(size, 4)
 
     # ------------------------------------------------------------------ #
+    # Realized PnL (feeds the daily-loss stop)
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _extract_oids(result: dict) -> "List[int]":
+        """
+        Pull the order ids of the fills out of a Hyperliquid order response.
+
+        Shape: result["response"]["data"]["statuses"] is a list of dicts, each
+        either {"filled": {"oid": .., "totalSz": .., "avgPx": ..}} or
+        {"resting": {...}} / {"error": ".."}. We only care about filled ones.
+        Any shape surprise just yields no oids (PnL stays undetermined) rather
+        than raising.
+        """
+        oids: "List[int]" = []
+        try:
+            statuses = result["response"]["data"]["statuses"]
+            for s in statuses:
+                filled = s.get("filled") if isinstance(s, dict) else None
+                if filled and filled.get("oid") is not None:
+                    oids.append(int(filled["oid"]))
+        except Exception:
+            pass
+        return oids
+
+    def _realized_pnl_for_oids(
+        self, oids: "List[int]", retries: int = 3, delay: float = 0.4
+    ) -> Optional[float]:
+        """
+        Sum the realized (closed) PnL of the fills belonging to `oids`.
+
+        Queries the client's own fills via the Info API and sums `closedPnl`
+        over every fill whose oid we placed. A single close can produce several
+        partial fills sharing one oid — summing matching-oid fills captures all
+        of them. Matching by oid (not by time) means restarts and concurrent
+        closes never double-count.
+
+        Fills can lag the order ack by a beat, so we retry briefly until all
+        requested oids are visible. Returns None on any failure or if no fills
+        ever appear — the caller treats None as "don't touch the counter" and
+        logs that the daily stop wasn't fed.
+        """
+        if not oids or self.info is None or not self.cfg.account_address:
+            return None
+        want = {int(o) for o in oids}
+        for attempt in range(retries):
+            try:
+                fills = self.info.user_fills(self.cfg.account_address)
+            except Exception as exc:
+                log.warning("user_fills failed while pricing realized PnL: %s", exc)
+                return None
+            total = 0.0
+            found: "set[int]" = set()
+            for f in fills or []:
+                oid = f.get("oid") if isinstance(f, dict) else None
+                if oid is None or int(oid) not in want:
+                    continue
+                found.add(int(oid))
+                try:
+                    total += float(f.get("closedPnl") or 0.0)
+                except (TypeError, ValueError):
+                    pass
+            if found and (found >= want or attempt == retries - 1):
+                return total
+            time.sleep(delay)
+        return None
+
+    # ------------------------------------------------------------------ #
     # Trading
     # ------------------------------------------------------------------ #
     def open(self, coin: str, side: str, size_usd: float, leverage: float) -> dict:
@@ -211,8 +279,19 @@ class Executor:
             # SDK: market close the whole position for this coin.
             # market_close(coin, sz=None, px=None, slippage=...) — sz=None = full.
             result = self.exchange.market_close(coin)
+            # Read the realized PnL of this close so the daily-loss stop can see
+            # it. Never lets a PnL-lookup problem abort the close itself.
+            realized = self._realized_pnl_for_oids(self._extract_oids(result))
+            if realized is not None:
+                log.info("CLOSE %s -> realized %.2f USD", coin, realized)
+            else:
+                log.warning(
+                    "CLOSE %s: could not read realized PnL — daily-loss counter "
+                    "NOT updated for this close",
+                    coin,
+                )
             log.info("CLOSE %s -> %s", coin, result)
-            return _ok("live close", raw=result, coin=coin)
+            return _ok("live close", raw=result, coin=coin, realized=realized)
         except Exception as exc:
             log.error("close(%s) failed: %s", coin, exc)
             return _err(f"close failed: {exc}", coin=coin)
