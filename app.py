@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import threading
 import urllib.error
 import urllib.request
@@ -39,6 +40,25 @@ from bot import run_loop
 # Bind to the loopback interface ONLY so the UI is never exposed on the LAN.
 HOST = "127.0.0.1"
 PORT = int(os.getenv("UI_PORT", "8765") or "8765")
+
+# Host header values we accept. A request whose Host is anything else (e.g. a
+# DNS-rebinding attacker's domain that resolves to 127.0.0.1) is rejected, so a
+# malicious web page cannot drive this panel.
+_ALLOWED_HOSTS = frozenset(
+    f"{h}:{PORT}"
+    for h in ("127.0.0.1", "localhost", "[::1]")
+) | frozenset(("127.0.0.1", "localhost", "[::1]"))
+
+# Origins we accept for cross-checking Origin/Referer on requests.
+_ALLOWED_ORIGINS = frozenset(
+    f"http://{h}:{PORT}" for h in ("127.0.0.1", "localhost", "[::1]")
+)
+
+# Per-process CSRF token. Injected into the served page and required as an
+# X-CSRF-Token header on every mutating POST. A cross-origin page cannot read
+# it (same-origin policy), so it cannot forge a valid request even via a
+# no-preflight "simple" POST.
+_CSRF_TOKEN = secrets.token_urlsafe(32)
 
 ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 
@@ -136,9 +156,18 @@ def _write_env_file(path: str, updates: Dict[str, str]) -> None:
 
     body = "\n".join(out_lines).rstrip("\n") + "\n"
     tmp = f"{path}.tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
+    # Create the temp file with 0600 from the start so the secrets it holds
+    # (HL_API_SECRET, OBSERVER_FEED_TOKEN) are never world-readable, not even
+    # for the instant before os.replace. os.replace preserves the source mode.
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(body)
     os.replace(tmp, path)
+    # If .env already existed with looser permissions, tighten it too.
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
 
 
 def _existing_env_values() -> Dict[str, str]:
@@ -171,6 +200,13 @@ def _validate_and_normalise(body: Dict[str, Any]) -> Tuple[Dict[str, str], "list
         if not _has(key):
             continue
         val = body[key]
+
+        # Reject control characters in any raw value: a newline would let a
+        # single field inject extra KEY=value lines into .env (e.g. flipping
+        # DRY_RUN off) on the next reload.
+        if _has_control_chars(val):
+            errors.append(f"{key} contains invalid characters")
+            continue
 
         # Secrets: an empty field means "keep what's already there".
         if key in config.SECRET_ENV_KEYS:
@@ -234,6 +270,11 @@ def _coerce_bool(val: Any) -> bool:
     return str(val).strip().lower() in ("1", "true", "yes", "y", "on")
 
 
+def _has_control_chars(val: Any) -> bool:
+    """True if the string form contains CR/LF/NUL (would corrupt .env lines)."""
+    return any(c in str(val) for c in ("\r", "\n", "\x00"))
+
+
 def _fmt_num(num: float) -> str:
     """Format a float without a trailing .0 for whole numbers (clean .env)."""
     if num == int(num):
@@ -256,11 +297,9 @@ def _build_status() -> Dict[str, Any]:
         open_positions = []
         realized_today = 0.0
 
-    # feed_ok is "unknown" unless a token is set (we don't probe on every poll).
-    if cfg.feed_token:
-        feed_ok: Any = "unknown"
-    else:
-        feed_ok = "unknown"
+    # We don't probe the feed on every status poll — the explicit "Test
+    # connection" action does that. Status just reports "unknown" here.
+    feed_ok: Any = "unknown"
 
     config_present = os.path.exists(ENV_PATH)
 
@@ -322,7 +361,7 @@ def _config_summary_masked() -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Start / Stop
 # ---------------------------------------------------------------------------
-def _start_loop() -> Tuple[bool, str]:
+def _start_loop(confirm_live: bool = False) -> Tuple[bool, str]:
     global _loop_thread, _stop_event
     with _loop_lock:
         if _is_running():
@@ -347,6 +386,14 @@ def _start_loop() -> Tuple[bool, str]:
                     "Cannot start LIVE without: "
                     + ", ".join(missing)
                     + ". Set them or keep DRY-RUN on.",
+                )
+            # Placing REAL orders is a dangerous action: require an explicit
+            # confirmation flag so a single forged/accidental POST can't flip
+            # the bot from practice into live trading.
+            if cfg.configured_live() and not confirm_live:
+                return (
+                    False,
+                    "LIVE start requires explicit confirmation (confirm_live).",
                 )
 
         ev = threading.Event()
@@ -492,12 +539,48 @@ class Handler(BaseHTTPRequestHandler):
             return None, "body must be a JSON object"
         return data, None
 
+    # -- request guard (anti-CSRF / anti-DNS-rebinding) ------------------ #
+    def _guard(self, *, require_csrf: bool) -> Optional[str]:
+        """
+        Return an error string if the request must be rejected, else None.
+
+        Defends the localhost-only panel against a malicious web page in the
+        user's browser:
+          - Host must be a local loopback host (defeats DNS-rebinding).
+          - Origin/Referer, if present, must be a local origin (cross-site block).
+          - Mutating POSTs must carry the per-process CSRF token, which a
+            cross-origin page cannot read.
+        """
+        host = (self.headers.get("Host") or "").strip().lower()
+        if host not in _ALLOWED_HOSTS:
+            return "bad host"
+
+        origin = (self.headers.get("Origin") or "").strip()
+        if origin and origin.lower() not in _ALLOWED_ORIGINS:
+            return "cross-origin request refused"
+
+        referer = (self.headers.get("Referer") or "").strip()
+        if referer and not any(
+            referer.lower().startswith(o) for o in _ALLOWED_ORIGINS
+        ):
+            return "cross-site referer refused"
+
+        if require_csrf:
+            token = self.headers.get("X-CSRF-Token") or ""
+            if not secrets.compare_digest(token, _CSRF_TOKEN):
+                return "missing or invalid CSRF token"
+        return None
+
     # -- routes ---------------------------------------------------------- #
     def do_GET(self) -> None:  # noqa: N802
         path = self.path.split("?", 1)[0]
         try:
+            blocked = self._guard(require_csrf=False)
+            if blocked is not None:
+                self._send_json({"error": "forbidden", "reason": blocked}, status=403)
+                return
             if path == "/":
-                self._send_html(_PAGE)
+                self._send_html(_PAGE.replace("__CSRF_TOKEN__", _CSRF_TOKEN))
             elif path == "/api/status":
                 self._send_json(_build_status())
             else:
@@ -510,10 +593,16 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         path = self.path.split("?", 1)[0]
         try:
+            blocked = self._guard(require_csrf=True)
+            if blocked is not None:
+                self._send_json({"error": "forbidden", "reason": blocked}, status=403)
+                return
             if path == "/api/config":
                 self._handle_config()
             elif path == "/api/start":
-                ok, msg = _start_loop()
+                body, _ = self._read_json_body()
+                confirm_live = bool((body or {}).get("confirm_live"))
+                ok, msg = _start_loop(confirm_live=confirm_live)
                 self._send_json(
                     {"ok": ok, "message": msg, "status": _build_status()},
                     status=200 if ok else 409,
@@ -555,8 +644,10 @@ class Handler(BaseHTTPRequestHandler):
         try:
             _write_env_file(ENV_PATH, updates)
         except OSError as exc:
+            # Log the detail locally; don't leak the path/OSError to the client.
+            _log_sink(f"could not write .env: {exc}")
             self._send_json(
-                {"ok": False, "error": f"could not write .env: {exc}"}, status=500
+                {"ok": False, "error": "could not save settings"}, status=500
             )
             return
         config.reload()
@@ -569,8 +660,14 @@ class Handler(BaseHTTPRequestHandler):
         )
 
     def _safe_500(self, exc: Exception) -> None:
+        # Log the detail locally for debugging; return a generic message so a
+        # caller (incl. one that reached us cross-site) learns nothing internal.
         try:
-            self._send_json({"error": "internal error", "detail": str(exc)}, status=500)
+            _log_sink(f"internal error: {exc}")
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            self._send_json({"error": "internal error"}, status=500)
         except Exception:  # noqa: BLE001
             pass
 
@@ -583,6 +680,7 @@ _PAGE = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="csrf-token" content="__CSRF_TOKEN__" />
 <title>The Observer — Auto-Execution Bot</title>
 <style>
   :root{
@@ -1077,6 +1175,16 @@ let addressSet = false;        // does .env already have an account address?
 
 function $(id){return document.getElementById(id);}
 
+// CSRF token injected by the server into a meta tag; sent on every mutating POST.
+const CSRF = (document.querySelector('meta[name="csrf-token"]')||{}).content || "";
+function postJSON(url, body){
+  return fetch(url, {
+    method:"POST",
+    headers:{"Content-Type":"application/json","X-CSRF-Token":CSRF},
+    body: body!==undefined ? JSON.stringify(body) : "{}",
+  });
+}
+
 function toast(msg, isErr){
   const t=$("toast"); t.textContent=msg;
   t.className="toast show"+(isErr?" err":"");
@@ -1246,7 +1354,7 @@ function showResult(good, msg, fix){
 // POST the whole collected config. Returns true on success.
 async function saveConfig(){
   try{
-    const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(collect())});
+    const r=await postJSON("/api/config", collect());
     const d=await r.json();
     if(d.ok){
       $("HL_API_SECRET").value=""; $("OBSERVER_FEED_TOKEN").value=""; prefill();
@@ -1289,7 +1397,7 @@ async function runTest(target){
   const box=$(boxId);
   box.innerHTML='<div class="tr na"><span class="ico">•</span><span>Checking your connection…</span></div>';
   try{
-    const r=await fetch("/api/test",{method:"POST"}); const d=await r.json();
+    const r=await postJSON("/api/test"); const d=await r.json();
     const res=d.results||{};
     box.innerHTML = row("Signal feed", res.feed) + row("Hyperliquid account", res.hyperliquid);
   }catch(e){
@@ -1327,7 +1435,15 @@ async function toggleRun(){
   const btn=$("toggleBtn"); btn.disabled=true;
   try{
     const ep = running ? "/api/stop" : "/api/start";
-    const r=await fetch(ep,{method:"POST"}); const d=await r.json();
+    let body;
+    if(!running && $("modePill").textContent.trim()==="LIVE"){
+      // Starting in LIVE places REAL orders — require an explicit confirmation.
+      if(!confirm("Start in LIVE mode? The bot will place REAL orders on your Hyperliquid account.")){
+        btn.disabled=false; return;
+      }
+      body = {confirm_live:true};
+    }
+    const r=await postJSON(ep, body); const d=await r.json();
     if(!d.ok) console.warn("Start/stop:", d.message);
     toast(friendlyRunMessage(d), !d.ok);
     if(d.status) render(d.status);
