@@ -157,7 +157,7 @@ def load_config() -> Config:
     size_override = _get_float("SIZE_USD", 0.0)  # 0 = derivar del capital base (avanzado: forzar $ fijos)
     size_usd = size_override if size_override > 0 else round(base_capital * risk_pct / 100.0, 2)
     return Config(
-        api_url=_get_str("OBSERVER_API_URL", "https://www.theobserversignalbot.com"),
+        api_url=_get_str("OBSERVER_API_URL", "https://api.theobserversignalbot.com"),
         feed_token=_get_str("OBSERVER_FEED_TOKEN"),
         account_address=_get_str("HL_ACCOUNT_ADDRESS"),
         api_secret=_get_str("HL_API_SECRET"),
