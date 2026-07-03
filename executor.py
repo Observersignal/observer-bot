@@ -93,6 +93,13 @@ class Executor:
             # Build the authenticated Exchange client from the client's
             # trade-only agent wallet key.
             wallet = Account.from_key(cfg.api_secret)
+            # SAFETY: make sure this API/agent wallet is actually approved to
+            # trade the account we are about to MONITOR. If HL_ACCOUNT_ADDRESS is
+            # not the account this wallet controls (e.g. the user pasted the API
+            # wallet's OWN address instead of their main account), orders would
+            # execute on a different account than the bot tracks — silently
+            # disabling every risk control. Refuse to run live in that case.
+            self._verify_agent_authority(wallet.address)
             self.exchange = Exchange(
                 wallet,
                 base_url,
@@ -101,6 +108,76 @@ class Executor:
             log.info("Executor ready in LIVE mode (real orders will be placed).")
         else:
             log.info("Executor ready in DRY-RUN mode (no real orders).")
+
+    # ------------------------------------------------------------------ #
+    # Agent-authority safety check
+    # ------------------------------------------------------------------ #
+    def _approved_agents(self, account_address: str) -> "Optional[List[str]]":
+        """
+        Return the lowercased addresses of the API/agent wallets approved to
+        trade `account_address` (Hyperliquid `extraAgents`). None if the query
+        can't be made (no Info client or network error).
+        """
+        if self.info is None:
+            return None
+        try:
+            res = self.info.post(
+                "/info", {"type": "extraAgents", "user": account_address}
+            )
+        except Exception as exc:
+            log.warning("extraAgents query failed: %s", exc)
+            return None
+        agents: "List[str]" = []
+        for a in res or []:
+            if isinstance(a, dict) and a.get("address"):
+                agents.append(str(a["address"]).lower())
+        return agents
+
+    def _verify_agent_authority(self, agent_addr: str) -> None:
+        """
+        Ensure the API/agent wallet actually controls HL_ACCOUNT_ADDRESS.
+
+        The wallet must appear in extraAgents(HL_ACCOUNT_ADDRESS). If it doesn't,
+        orders would execute on a DIFFERENT account than the bot monitors, which
+        silently disables the open-count cap, the daily-loss stop and
+        reconciliation. That is more dangerous than any single bad fill, so we
+        refuse to start live. Raises RuntimeError on a mismatch.
+        """
+        acct = (self.cfg.account_address or "").strip().lower()
+        agent = (agent_addr or "").strip().lower()
+        if not acct:
+            raise RuntimeError("HL_ACCOUNT_ADDRESS is not set.")
+
+        agents = self._approved_agents(self.cfg.account_address)
+        if agents is not None:
+            if agent not in agents:
+                raise RuntimeError(
+                    f"The API wallet ({agent_addr}) is NOT an approved agent of "
+                    f"HL_ACCOUNT_ADDRESS ({self.cfg.account_address}). Orders would "
+                    "execute on a different account than this bot monitors, "
+                    "disabling every risk control. Set HL_ACCOUNT_ADDRESS to your "
+                    "MAIN Hyperliquid account — the one that approved this API "
+                    "wallet — NOT the API wallet's own address."
+                )
+            log.info(
+                "Agent authority verified: API wallet is approved for %s.",
+                self.cfg.account_address,
+            )
+            return
+
+        # Query failed — fall back to catching the most common confusion:
+        # the API wallet's OWN address pasted as the account address.
+        if agent == acct:
+            raise RuntimeError(
+                f"HL_ACCOUNT_ADDRESS equals the API wallet's own address "
+                f"({self.cfg.account_address}). It must be your MAIN Hyperliquid "
+                "account address (the one that approved the API wallet)."
+            )
+        log.warning(
+            "Could not verify the API wallet is approved for %s (network?). "
+            "Proceeding — double-check that this is your MAIN account address.",
+            self.cfg.account_address,
+        )
 
     # ------------------------------------------------------------------ #
     # Market data
