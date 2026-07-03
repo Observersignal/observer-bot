@@ -122,6 +122,21 @@ def poll(cursor: str) -> Tuple[List[dict], str]:
         log.warning("feed request failed (%s); will retry next tick", exc)
         return [], cursor
 
+    if resp.status_code in (401, 403):
+        # An expired or rejected token — NOT a transient blip. Feed tokens
+        # expire (~35 days); this is almost always "your token lapsed". Say so
+        # clearly and loudly so the client renews instead of silently running
+        # blind for days. Still returns [] so the loop keeps running (a renewed
+        # token in .env is picked up on the next Start).
+        log.error(
+            "feed rejected the token (HTTP %s) — it looks EXPIRED or invalid. "
+            "Send /bot to The Observer Telegram bot for a fresh token, then "
+            "update OBSERVER_FEED_TOKEN in your .env and restart. No new signals "
+            "until then.",
+            resp.status_code,
+        )
+        return [], cursor
+
     if resp.status_code != 200:
         log.warning(
             "feed returned HTTP %s; will retry next tick", resp.status_code

@@ -1,4 +1,7 @@
-hyperliquid-python-sdk>=0.9.0
-eth-account>=0.10.0
-requests>=2.31.0
-python-dotenv>=1.0.0
+# Pinned to the versions validated against the live smoke test. This bot signs
+# real trading orders on the client's account, so dependency drift is a safety
+# issue: do NOT loosen these without re-running SMOKE_TEST.md against them.
+hyperliquid-python-sdk==0.24.0
+eth-account==0.13.7
+requests==2.32.5
+python-dotenv==1.2.1

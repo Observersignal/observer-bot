@@ -4,3 +4,6 @@ __pycache__/
 *.pyc
 .DS_Store
 STOP
+
+# Internal vendor runbook — never ship to clients
+SMOKE_TEST.md
