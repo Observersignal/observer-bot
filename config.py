@@ -7,13 +7,38 @@ All configuration lives in the client's own .env file (copied from
 
 from __future__ import annotations
 
+import base64
+import json
 import os
+import time
 from dataclasses import dataclass
+from typing import Optional
 
 from dotenv import load_dotenv
 
 # Load .env from the current working directory (the client's machine).
 load_dotenv()
+
+
+def _token_expiry_ms(token: str) -> Optional[int]:
+    """
+    Read the expiry (epoch ms) embedded in a feed token WITHOUT the secret.
+
+    The token is `<payload_b64url>.<sig>`, where payload is
+    base64url(json {"a":1, "e":<expiry ms>, "u":<user id>}). We only decode the
+    payload (it's not secret) to show the client how long their access lasts —
+    the signature is still verified server-side. Returns None if it can't be read.
+    """
+    if not token:
+        return None
+    try:
+        payload_b64 = token.split(".", 1)[0]
+        pad = "=" * (-len(payload_b64) % 4)
+        data = json.loads(base64.urlsafe_b64decode(payload_b64 + pad))
+        e = data.get("e")
+        return int(e) if e is not None else None
+    except Exception:
+        return None
 
 
 # Keys this app knows about — used by the UI to write .env safely (it only
@@ -108,6 +133,23 @@ class Config:
         """No feed token -> run the local DEV mock sequence instead of HTTP."""
         return not self.feed_token
 
+    @property
+    def feed_token_expiry_ms(self) -> Optional[int]:
+        """Expiry (epoch ms) embedded in the feed token, or None."""
+        return _token_expiry_ms(self.feed_token)
+
+    @property
+    def feed_token_days_left(self) -> Optional[float]:
+        """
+        Days until the feed token expires (may be negative if already expired),
+        or None if there's no token / it can't be read. Lets the client see how
+        much of their subscription access remains and renew before it lapses.
+        """
+        exp = self.feed_token_expiry_ms
+        if exp is None:
+            return None
+        return (exp - time.time() * 1000.0) / 86_400_000.0
+
     def configured_live(self) -> bool:
         """
         True only if the bot is allowed to place REAL orders:
@@ -128,8 +170,16 @@ class Config:
         if len(addr) > 12:
             addr = addr[:6] + "..." + addr[-4:]
         secret = "set" if self.api_secret else "(not set)"
+        days = self.feed_token_days_left
+        if days is None:
+            access = "no token"
+        elif days < 0:
+            access = "EXPIRED — renew with /bot on Telegram"
+        else:
+            access = f"~{days:.0f} day(s) left (renew with /bot before it lapses)"
         return (
             f"  feed source      : {feed}\n"
+            f"  signal access    : {access}\n"
             f"  api url          : {self.api_url}\n"
             f"  account address  : {addr}\n"
             f"  api secret       : {secret}\n"

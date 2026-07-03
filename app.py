@@ -325,6 +325,13 @@ def _build_status() -> Dict[str, Any]:
         "feed_ok": feed_ok,
         # Secrets are masked to plain booleans-as-strings, never echoed.
         "feed_token": "set" if cfg.feed_token else "(not set)",
+        # Days left on the subscription token (decoded from the token itself,
+        # no secret needed). null if there's no token / can't be read.
+        "token_days_left": (
+            round(cfg.feed_token_days_left, 1)
+            if cfg.feed_token_days_left is not None
+            else None
+        ),
         "api_secret": "set" if cfg.api_secret else "(not set)",
         "api_url": cfg.api_url,
         "account_address": cfg.account_address,
@@ -1136,6 +1143,7 @@ _PAGE = r"""<!DOCTYPE html>
           <div class="status-line"><span class="k">Margin / trade</span><span class="v" id="stSize">—</span></div>
           <div class="status-line"><span class="k">Realized today</span><span class="v" id="stRealized">—</span></div>
           <div class="status-line"><span class="k">Feed token</span><span class="v" id="stFeed">—</span></div>
+          <div class="status-line"><span class="k">Access left</span><span class="v" id="stAccess">—</span></div>
           <div class="status-line"><span class="k">API secret</span><span class="v" id="stSecret">—</span></div>
           <h2 style="margin-top:16px">Open positions</h2>
           <ul class="poslist" id="posList"><li class="empty">none</li></ul>
@@ -1485,6 +1493,11 @@ function render(s){
   $("stRealized").className = "v "+(rt>0?"green":(rt<0?"red":""));
   $("stFeed").textContent = s.feed_token;
   $("stFeed").className = "v "+(s.feed_token==="set"?"green":"");
+  const dl = s.token_days_left;
+  const acc = $("stAccess");
+  if(dl===null || dl===undefined){ acc.textContent = s.feed_token==="set" ? "unknown" : "—"; acc.className="v"; }
+  else if(dl < 0){ acc.textContent = "EXPIRED — send /bot on Telegram"; acc.className="v red"; }
+  else { acc.textContent = "~"+Math.round(dl)+" day(s)"; acc.className = "v "+(dl<=3?"red":(dl<=7?"gold":"green")); }
   $("stSecret").textContent = s.api_secret;
   $("stSecret").className = "v "+(s.api_secret==="set"?"green":"");
 
