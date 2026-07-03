@@ -14,7 +14,8 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import List, Optional
+from datetime import datetime, timezone
+from typing import Dict, List, Optional
 
 from config import Config
 
@@ -224,6 +225,49 @@ class Executor:
         return None
 
     # ------------------------------------------------------------------ #
+    # Order-ack validation
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _ack_ok(result: object) -> "tuple[bool, str]":
+        """
+        Decide whether a Hyperliquid order ack actually placed/filled.
+
+        HL returns HTTP 200 even for BUSINESS rejections (insufficient margin,
+        tick/lot violation, reduce-only, etc.) — the SDK does NOT raise in those
+        cases. A rejection surfaces as a top-level status != 'ok', or a per-order
+        status carrying {'error': ...}. We treat the order as accepted ONLY when
+        the global status is 'ok', at least one per-order status is 'filled' or
+        'resting', and NONE is an 'error'. Returns (accepted, detail).
+
+        This is what stops a rejected order from being recorded as an open
+        position locally (state divergence).
+        """
+        if not isinstance(result, dict):
+            return False, f"no order ack ({result!r})"
+        if result.get("status") != "ok":
+            return False, f"exchange rejected order: {result.get('response')!r}"
+        try:
+            statuses = result["response"]["data"]["statuses"]
+        except (KeyError, TypeError):
+            return False, "order ack missing statuses"
+        if not statuses:
+            return False, "order ack had no statuses"
+        errors = [
+            s["error"]
+            for s in statuses
+            if isinstance(s, dict) and s.get("error")
+        ]
+        if errors:
+            return False, "; ".join(str(e) for e in errors)
+        accepted = any(
+            isinstance(s, dict) and ("filled" in s or "resting" in s)
+            for s in statuses
+        )
+        if not accepted:
+            return False, f"order neither filled nor resting: {statuses!r}"
+        return True, "accepted"
+
+    # ------------------------------------------------------------------ #
     # Trading
     # ------------------------------------------------------------------ #
     def open(self, coin: str, side: str, size_usd: float, leverage: float) -> dict:
@@ -259,8 +303,23 @@ class Executor:
             # SDK: leverage + modo de margen. update_leverage(leverage, coin, is_cross).
             # is_cross=False -> ISOLATED (lo que sigue el modelo); True -> cross.
             self.exchange.update_leverage(int(leverage), coin, not self.cfg.isolated)
-            # SDK: market open. market_open(coin, is_buy, sz, px=None, slippage=...)
-            result = self.exchange.market_open(coin, is_buy, size)
+            # SDK: market open with a slippage cap. market_open(coin, is_buy, sz,
+            # px=None, slippage=...). slippage is a fraction (0.01 = 1%): an order
+            # that can't fill within the cap is rejected instead of filling at any
+            # price.
+            result = self.exchange.market_open(
+                coin, is_buy, size, None, self.cfg.max_slippage_pct
+            )
+            accepted, detail = self._ack_ok(result)
+            if not accepted:
+                # Rejected at the status level (no exception): do NOT record a
+                # position that never opened.
+                log.error(
+                    "OPEN %s %s REJECTED by exchange: %s", side.upper(), coin, detail
+                )
+                return _err(
+                    f"open rejected: {detail}", coin=coin, side=side, raw=result
+                )
             log.info("OPEN %s %s size=%s -> %s", side.upper(), coin, size, result)
             return _ok("live open", raw=result, coin=coin, side=side, size=size)
         except Exception as exc:
@@ -278,7 +337,26 @@ class Executor:
         try:
             # SDK: market close the whole position for this coin.
             # market_close(coin, sz=None, px=None, slippage=...) — sz=None = full.
-            result = self.exchange.market_close(coin)
+            result = self.exchange.market_close(
+                coin, None, None, self.cfg.max_slippage_pct
+            )
+            if result is None:
+                # The SDK returns None when there was NO open position for this
+                # coin on the exchange. Report it honestly (no_position) so the
+                # caller reconciles local state instead of assuming a clean close.
+                log.warning(
+                    "CLOSE %s: no open position on exchange (nothing to close)", coin
+                )
+                return _ok(
+                    "close: no open position",
+                    coin=coin,
+                    realized=None,
+                    no_position=True,
+                )
+            accepted, detail = self._ack_ok(result)
+            if not accepted:
+                log.error("CLOSE %s REJECTED by exchange: %s", coin, detail)
+                return _err(f"close rejected: {detail}", coin=coin, raw=result)
             # Read the realized PnL of this close so the daily-loss stop can see
             # it. Never lets a PnL-lookup problem abort the close itself.
             realized = self._realized_pnl_for_oids(self._extract_oids(result))
@@ -287,7 +365,7 @@ class Executor:
             else:
                 log.warning(
                     "CLOSE %s: could not read realized PnL — daily-loss counter "
-                    "NOT updated for this close",
+                    "NOT updated for this close (corrected at next reconcile)",
                     coin,
                 )
             log.info("CLOSE %s -> %s", coin, result)
@@ -319,16 +397,124 @@ class Executor:
                 side=new_side,
                 size=size,
                 price=price,
+                closed=True,
+                reopened=True,
             )
 
         close_res = self.close(coin)
         if not close_res.get("ok"):
-            return _err(f"flip aborted, close failed: {close_res.get('detail')}")
+            # A real close FAILURE (rejected/exception) — the old position may
+            # still be open. Abort without touching state (closed=False).
+            return _err(
+                f"flip aborted, close failed: {close_res.get('detail')}",
+                coin=coin,
+                closed=False,
+                close=close_res,
+            )
+        # The close leg succeeded (or there was nothing to close): carry its
+        # realized PnL so the caller can feed the daily-loss counter.
+        realized = close_res.get("realized")
         open_res = self.open(coin, new_side, size_usd, leverage)
+        if not open_res.get("ok"):
+            # Closed but could NOT reopen: the account is now FLAT. Report
+            # closed=True / reopened=False so the caller records a close, never
+            # a phantom open on the new side.
+            log.error(
+                "FLIP %s: closed but reopen failed: %s", coin, open_res.get("detail")
+            )
+            return _err(
+                f"flip: closed but reopen failed: {open_res.get('detail')}",
+                coin=coin,
+                closed=True,
+                reopened=False,
+                realized=realized,
+                close=close_res,
+                open=open_res,
+            )
         return _ok(
             f"flip {coin} to {new_side}",
-            close=close_res,
-            open=open_res,
             coin=coin,
             side=new_side,
+            closed=True,
+            reopened=True,
+            realized=realized,
+            close=close_res,
+            open=open_res,
         )
+
+    # ------------------------------------------------------------------ #
+    # Reconciliation — HL account is the source of truth
+    # ------------------------------------------------------------------ #
+    def reconcile(self) -> "Optional[Dict[str, object]]":
+        """
+        Read the client's REAL state from Hyperliquid and return the truth:
+
+            {"positions": {coin: "long"|"short"}, "realized_today": float|None}
+
+        `positions` come from clearinghouseState assetPositions (sign of szi).
+        `realized_today` sums closedPnl over today's (UTC) fills — authoritative
+        even when an individual close's PnL read failed, which is what makes the
+        daily-loss stop reliable. Returns None if HL is unreachable (the caller
+        then keeps its current view untouched).
+        """
+        if self.info is None or not self.cfg.account_address:
+            return None
+        try:
+            user_state = self.info.user_state(self.cfg.account_address)
+        except Exception as exc:
+            log.warning("reconcile: user_state failed: %s", exc)
+            return None
+
+        positions: "Dict[str, str]" = {}
+        try:
+            for ap in (user_state or {}).get("assetPositions", []) or []:
+                pos = ap.get("position") if isinstance(ap, dict) else None
+                if not isinstance(pos, dict):
+                    continue
+                coin = pos.get("coin")
+                try:
+                    szi = float(pos.get("szi") or 0.0)
+                except (TypeError, ValueError):
+                    szi = 0.0
+                if coin and szi != 0.0:
+                    positions[coin] = "long" if szi > 0 else "short"
+        except Exception as exc:
+            log.warning("reconcile: could not parse positions: %s", exc)
+            return None
+
+        realized_today = self._realized_today_from_fills()
+        return {"positions": positions, "realized_today": realized_today}
+
+    def _realized_today_from_fills(self) -> Optional[float]:
+        """
+        Sum closedPnl across the client's fills from the start of the current UTC
+        day. Source of truth for the daily-loss stop. None on any failure (the
+        caller then leaves its counter as-is rather than zeroing it).
+        """
+        if self.info is None or not self.cfg.account_address:
+            return None
+        now = datetime.now(timezone.utc)
+        day_start_ms = int(
+            datetime(now.year, now.month, now.day, tzinfo=timezone.utc).timestamp()
+            * 1000
+        )
+        try:
+            fills = self.info.user_fills(self.cfg.account_address)
+        except Exception as exc:
+            log.warning("reconcile: user_fills failed: %s", exc)
+            return None
+        total = 0.0
+        for f in fills or []:
+            if not isinstance(f, dict):
+                continue
+            t = f.get("time")
+            try:
+                if t is not None and int(t) < day_start_ms:
+                    continue
+            except (TypeError, ValueError):
+                continue
+            try:
+                total += float(f.get("closedPnl") or 0.0)
+            except (TypeError, ValueError):
+                pass
+        return total

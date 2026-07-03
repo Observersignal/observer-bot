@@ -39,6 +39,11 @@ class State:
         self.open_positions = dict(data.get("open_positions", {}))
         self.day = str(data.get("day", "") or _today_utc())
         self.realized_today_usd = float(data.get("realized_today_usd", 0.0))
+        # True when a live close could not determine its realized PnL. While set,
+        # risk.can_open pauses NEW opens so the daily-loss stop can't be silently
+        # under-counted. Cleared by a successful reconcile (which recomputes the
+        # day's realized PnL from HL fills authoritatively).
+        self.pnl_undetermined = bool(data.get("pnl_undetermined", False))
         # Fast membership lookups; kept in sync with processed_ids.
         self._processed_set = set(self.processed_ids)
         self._roll_day_if_needed()
@@ -87,6 +92,23 @@ class State:
         self._roll_day_if_needed()
         self.realized_today_usd += float(usd)
 
+    def set_pnl_undetermined(self, flag: bool) -> None:
+        self.pnl_undetermined = bool(flag)
+
+    # -- reconciliation -------------------------------------------------- #
+    def apply_reconciliation(self, positions: dict, realized_today) -> None:
+        """
+        Overwrite local open positions with the exchange's truth, and (when it
+        could be recomputed) reset today's realized PnL to the authoritative
+        value, clearing the pnl_undetermined pause. `realized_today` is None when
+        the fills lookup failed — then we keep the current counter and the pause.
+        """
+        self._roll_day_if_needed()
+        self.open_positions = dict(positions or {})
+        if realized_today is not None:
+            self.realized_today_usd = float(realized_today)
+            self.pnl_undetermined = False
+
     # -- persistence ----------------------------------------------------- #
     def to_dict(self) -> dict:
         return {
@@ -95,6 +117,7 @@ class State:
             "open_positions": self.open_positions,
             "day": self.day,
             "realized_today_usd": self.realized_today_usd,
+            "pnl_undetermined": self.pnl_undetermined,
         }
 
     def save(self, path: str = STATE_FILE) -> None:

@@ -24,11 +24,22 @@ def can_open(state: State, cfg: Config) -> "tuple[bool, str]":
 
     Blocks a new open when:
       - the STOP kill-switch file exists,
+      - a recent close's realized PnL is undetermined (daily stop unreliable),
       - the number of open positions is already at MAX_OPEN, or
       - today's realized loss has reached the daily loss limit.
     """
     if os.path.exists(STOP_FILE):
         return False, f"kill-switch active ({STOP_FILE} file present)"
+
+    # If a live close couldn't determine its realized PnL, the daily-loss stop
+    # may be under-counted. Pause new opens until a reconcile confirms the day's
+    # realized PnL from the exchange.
+    if getattr(state, "pnl_undetermined", False):
+        return (
+            False,
+            "realized PnL of a recent close is undetermined — pausing new opens "
+            "until reconciled with the exchange",
+        )
 
     open_count = state.count_open()
     if open_count >= cfg.max_open:

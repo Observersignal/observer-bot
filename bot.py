@@ -76,6 +76,28 @@ def _apply_realized(res: dict, st: state_mod.State) -> None:
         st.add_realized(realized)
 
 
+def _flag_undetermined_if_needed(
+    res: dict, st: state_mod.State, cfg: config.Config
+) -> None:
+    """
+    After a LIVE close/flip that executed but couldn't price its realized PnL
+    (realized is None and it wasn't a no-op close), set the pnl_undetermined
+    pause so risk.can_open blocks NEW opens until a reconcile confirms the day's
+    realized PnL from the exchange. This is what keeps the daily-loss stop from
+    being silently under-counted. No-op in dry-run.
+    """
+    if not isinstance(res, dict) or not cfg.configured_live():
+        return
+    if res.get("no_position"):
+        return
+    if res.get("realized") is None:
+        st.set_pnl_undetermined(True)
+        log.warning(
+            "realized PnL undetermined for %s — pausing new opens until reconcile",
+            res.get("coin"),
+        )
+
+
 def _handle_event(
     ev: dict, st: state_mod.State, ex: Executor, cfg: config.Config
 ) -> None:
@@ -116,6 +138,7 @@ def _handle_event(
         if res.get("ok"):
             st.record_close(coin)
             _apply_realized(res, st)
+            _flag_undetermined_if_needed(res, st, cfg)
 
     elif event == "flip":
         if not cfg.allow_flip:
@@ -132,6 +155,7 @@ def _handle_event(
             if res.get("ok"):
                 st.record_close(coin)
                 _apply_realized(res, st)
+                _flag_undetermined_if_needed(res, st, cfg)
             return
         # A flip opens a new position; honour the open-side risk checks.
         allowed, reason = risk.can_open(st, cfg)
@@ -144,10 +168,17 @@ def _handle_event(
             if res.get("ok"):
                 st.record_close(coin)
                 _apply_realized(res, st)
+                _flag_undetermined_if_needed(res, st, cfg)
             return
+        # Act on the flip result's explicit closed/reopened flags so local state
+        # tracks reality: if the close leg ran, drop the old side; only record a
+        # new position if the reopen actually succeeded (otherwise we're FLAT).
         res = ex.flip(coin, side, cfg.size_usd, cfg.leverage)
-        if res.get("ok"):
+        if res.get("closed"):
+            st.record_close(coin)
             _apply_realized(res, st)  # realized comes from the close leg
+            _flag_undetermined_if_needed(res, st, cfg)
+        if res.get("reopened"):
             st.record_open(coin, side)
 
     elif event == "increase":
@@ -255,6 +286,7 @@ def run_loop(
             "Ctrl-C to stop." if log_sink is None else "Stop from the UI to halt.",
         )
 
+        cycles = 0
         while not stop_event.is_set():
             try:
                 events, new_cursor = feed.poll(st.cursor)
@@ -285,6 +317,31 @@ def run_loop(
 
                     st.cursor = new_cursor
                     st.save()
+
+                # Periodic reconciliation against the REAL Hyperliquid account
+                # (live only). Corrects any local/exchange divergence (phantom or
+                # missed positions) and recomputes today's realized PnL from fills
+                # so the daily-loss stop stays honest even if a per-close PnL read
+                # failed. Clears the pnl_undetermined pause on success.
+                cycles += 1
+                if (
+                    cfg.configured_live()
+                    and cfg.reconcile_every > 0
+                    and cycles % cfg.reconcile_every == 0
+                ):
+                    snap = ex.reconcile()
+                    if snap is not None:
+                        st.apply_reconciliation(
+                            snap.get("positions") or {}, snap.get("realized_today")
+                        )
+                        st.save()
+                        log.info(
+                            "reconciled with HL: %s open position(s), "
+                            "realized today=%.2f USD%s",
+                            st.count_open(),
+                            st.realized_today_usd,
+                            "" if not st.pnl_undetermined else " (PnL still pending)",
+                        )
 
             except Exception as exc:
                 # Defensive catch-all so the loop survives any unexpected error.

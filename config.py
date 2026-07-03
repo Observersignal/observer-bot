@@ -34,6 +34,8 @@ KNOWN_ENV_KEYS = (
     "POLL_SECONDS",
     "ALLOW_FLIP",
     "ALLOW_INCREASE",
+    "MAX_SLIPPAGE_PCT",
+    "RECONCILE_EVERY",
 )
 
 # The secret keys that must never be echoed back to the UI in clear text.
@@ -98,6 +100,8 @@ class Config:
     allow_flip: bool
     allow_increase: bool
     max_signal_age_min: float  # on reconnect, OPEN signals older than this are skipped
+    max_slippage_pct: float    # market-order slippage cap (fraction: 0.01 = 1%)
+    reconcile_every: int       # reconcile local state vs HL every N cycles (0 = off)
 
     @property
     def mock_mode(self) -> bool:
@@ -139,6 +143,8 @@ class Config:
             f"  allow flip       : {self.allow_flip}\n"
             f"  allow increase   : {self.allow_increase}\n"
             f"  max signal age   : {self.max_signal_age_min:g} min (stale OPENs skipped on reconnect)\n"
+            f"  max slippage     : {self.max_slippage_pct * 100:g}% (market orders rejected beyond this)\n"
+            f"  reconcile every  : {self.reconcile_every} cycles (0 = off)\n"
             f"  dry run          : {self.dry_run}"
         )
 
@@ -167,6 +173,8 @@ def load_config() -> Config:
         allow_flip=_get_bool("ALLOW_FLIP", True),
         allow_increase=_get_bool("ALLOW_INCREASE", False),
         max_signal_age_min=_get_float("MAX_SIGNAL_AGE_MIN", 15.0),
+        max_slippage_pct=_get_float("MAX_SLIPPAGE_PCT", 0.01),
+        reconcile_every=_get_int("RECONCILE_EVERY", 20),
     )
 
 
