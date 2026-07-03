@@ -1146,7 +1146,7 @@ _PAGE = r"""<!DOCTYPE html>
         </div>
       </div>
       <div class="row-actions" style="margin-top:16px">
-        <button onclick="runTest()">Test connection</button>
+        <button onclick="runTest('testboxPanel')">Test connection</button>
       </div>
       <div class="testbox" id="testboxPanel"></div>
     </div>
