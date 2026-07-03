@@ -258,6 +258,23 @@ def run_loop(
         _banner(cfg)
 
         st = state_mod.load()
+
+        # A cursor left over from DEV MOCK MODE (e.g. "mock-3") is not a valid
+        # live cursor — the feed's `since` is an integer, so it would 422 every
+        # poll. If we're now on the live feed with a non-numeric cursor, discard
+        # the mock state and re-baseline (adopt the real cursor without acting)
+        # instead of spamming errors or replaying history. This matters because
+        # the onboarding suggests trying the mock demo before going live.
+        if not cfg.mock_mode and st.cursor and not str(st.cursor).isdigit():
+            log.warning(
+                "discarding mock leftover state (cursor=%r) — switching to live "
+                "feed, will re-baseline",
+                st.cursor,
+            )
+            st.cursor = ""
+            st.open_positions = {}
+            st.save()
+
         log.info(
             "loaded state: %s open position(s), cursor=%r, realized today=%.2f USD",
             st.count_open(),
