@@ -112,7 +112,10 @@ def poll(cursor: str) -> Tuple[List[dict], str]:
         "X-Feed-Token": cfg.feed_token,
         "Accept": "application/json",
     }
-    params = {"since": cursor}
+    # The feed's `since` is an integer (empty string -> HTTP 422). On a
+    # brand-new install the cursor is empty, so send "0": the first poll then
+    # returns the history and the baseline adopts the real cursor without acting.
+    params = {"since": cursor or "0"}
 
     try:
         resp = requests.get(
