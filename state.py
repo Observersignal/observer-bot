@@ -64,18 +64,47 @@ class State:
     def seen(self, signal_id: str) -> bool:
         return signal_id in self._processed_set
 
+    def _feed_cannot_reserve(self, signal_id: str) -> bool:
+        """True if the feed can no longer send us this id again (numeric id at or
+        below the numeric cursor: the feed only ever returns id > since=cursor)."""
+        try:
+            return int(signal_id) <= int(self.cursor)
+        except (TypeError, ValueError):
+            return False
+
     def mark_processed(self, signal_id: str) -> None:
         if signal_id in self._processed_set:
             return
         self._processed_set.add(signal_id)
         self.processed_ids.append(signal_id)
-        # Trim oldest if we exceed the cap.
-        if len(self.processed_ids) > _MAX_PROCESSED:
-            drop = len(self.processed_ids) - _MAX_PROCESSED
-            removed = self.processed_ids[:drop]
-            self.processed_ids = self.processed_ids[drop:]
-            for r in removed:
-                self._processed_set.discard(r)
+        if len(self.processed_ids) <= _MAX_PROCESSED:
+            return
+        # Over the cap: prefer dropping ids the feed can no longer re-serve
+        # (id <= cursor). Dropping a still-servable id would let that signal
+        # EXECUTE AGAIN if the cursor ever regresses (state reset, feed
+        # migration) — a real duplicated order, far worse than a bigger file.
+        excess = len(self.processed_ids) - _MAX_PROCESSED
+        kept, removed = [], []
+        for pid in self.processed_ids:
+            if excess > 0 and self._feed_cannot_reserve(pid):
+                removed.append(pid)
+                excess -= 1
+            else:
+                kept.append(pid)
+        if excess > 0:
+            # Nothing safe left to drop (non-numeric ids or a regressed cursor):
+            # fall back to trimming oldest so state.json stays bounded, loudly.
+            log.warning(
+                "processed-id history over %s with no safely prunable ids; "
+                "trimming %s oldest — duplicate protection for those is gone",
+                _MAX_PROCESSED,
+                excess,
+            )
+            removed.extend(kept[:excess])
+            kept = kept[excess:]
+        self.processed_ids = kept
+        for r in removed:
+            self._processed_set.discard(r)
 
     # -- positions ------------------------------------------------------- #
     def record_open(self, coin: str, side: str) -> None:
