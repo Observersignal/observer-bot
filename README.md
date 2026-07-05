@@ -194,6 +194,39 @@ You don't need to be technical. Here's the whole thing, step by step:
 > - Keep **`DRY_RUN=true`** until you've watched it run and you're happy with the
 >   behaviour. Flip to live only when you're ready.
 
+### Or: a Raspberry Pi you already own
+
+A Raspberry Pi is a perfectly good "VPS at home" — the bot is a light polling
+loop (~100 MB of RAM), so even a **512 MB** board like the Pi Zero 2 W runs it
+comfortably. Everything above applies as-is, with three Pi-specific notes:
+
+1. **Use the 64-bit Raspberry Pi OS** if your board supports it (Pi Zero 2 W,
+   Pi 3 and newer all do). On the old 32-bit/ARMv6 boards `pip` falls back to
+   [piwheels](https://www.piwheels.org) for pre-built packages — it works, but
+   the install is slower and occasionally a version lags behind.
+
+2. **Install inside a virtualenv.** Recent Raspberry Pi OS (Bookworm) blocks
+   bare `pip install` system-wide, so:
+
+   ```bash
+   cd ~/observer-bot
+   python3 -m venv .venv
+   .venv/bin/pip install -r requirements.txt
+   ```
+
+   …and point the systemd unit's `ExecStart` at the venv's interpreter:
+
+   ```ini
+   ExecStart=/home/youruser/observer-bot/.venv/bin/python bot.py
+   ```
+
+3. **Leave NTP on** (it is by default: `timedatectl` should say
+   "System clock synchronized: yes"). The Pi has no hardware clock, and order
+   signing needs an accurate one.
+
+Power the board from a proper supply, use a decent SD card (or a USB SSD), and
+the same systemd unit keeps the bot alive through power cuts and reboots.
+
 ## Run a DRY-RUN first (recommended)
 
 `DRY_RUN=true` is the default. In dry-run the bot **places no real orders** —
