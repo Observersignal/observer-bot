@@ -71,6 +71,11 @@ _log_lock = threading.Lock()
 _loop_lock = threading.Lock()
 _loop_thread: "Optional[threading.Thread]" = None
 _stop_event: "Optional[threading.Event]" = None
+# Mode the RUNNING loop was started with (None when stopped). The status must
+# report THIS, not the freshly-reloaded config: saving DRY_RUN=false while the
+# bot runs reloads config.CFG, but the running executor fixed its mode at
+# Start — without this, the panel says LIVE while the loop keeps simulating.
+_running_live: "Optional[bool]" = None
 
 
 def _log_sink(line: str) -> None:
@@ -303,15 +308,23 @@ def _build_status() -> Dict[str, Any]:
 
     config_present = os.path.exists(ENV_PATH)
 
-    if cfg.configured_live():
-        mode = "LIVE"
-    else:
-        mode = "DRY-RUN"
+    # Mode of record: while the loop RUNS, report the mode it was started with
+    # (the executor fixes it at Start) — never the freshly-saved config, which
+    # only applies on the next Start. `restart_required` tells the UI they differ.
+    running = _is_running()
+    effective_live = (
+        _running_live if (running and _running_live is not None) else cfg.configured_live()
+    )
+    mode = "LIVE" if effective_live else "DRY-RUN"
+    restart_required = bool(
+        running and _running_live is not None and cfg.configured_live() != _running_live
+    )
 
     return {
-        "running": _is_running(),
+        "running": running,
         "dry_run": cfg.dry_run,
         "mode": mode,
+        "restart_required": restart_required,
         "base_capital": cfg.base_capital,
         "size_usd": cfg.size_usd,
         "risk_per_trade_pct": cfg.risk_per_trade_pct,
@@ -361,7 +374,18 @@ def _config_summary_masked() -> Dict[str, Any]:
         "account_address": cfg.account_address,
         "feed_token": "set" if cfg.feed_token else "(not set)",
         "api_secret": "set" if cfg.api_secret else "(not set)",
-        "mode": "LIVE" if cfg.configured_live() else "DRY-RUN",
+        # Same mode-of-record rule as _build_status: a running loop keeps the
+        # mode it started with; a saved change only applies on the next Start.
+        "mode": (
+            "LIVE"
+            if (_running_live if (_is_running() and _running_live is not None)
+                else cfg.configured_live())
+            else "DRY-RUN"
+        ),
+        "restart_required": bool(
+            _is_running() and _running_live is not None
+            and cfg.configured_live() != _running_live
+        ),
     }
 
 
@@ -369,7 +393,7 @@ def _config_summary_masked() -> Dict[str, Any]:
 # Start / Stop
 # ---------------------------------------------------------------------------
 def _start_loop(confirm_live: bool = False) -> Tuple[bool, str]:
-    global _loop_thread, _stop_event
+    global _loop_thread, _stop_event, _running_live
     with _loop_lock:
         if _is_running():
             return False, "Bot is already running."
@@ -409,6 +433,7 @@ def _start_loop(confirm_live: bool = False) -> Tuple[bool, str]:
         )
         _stop_event = ev
         _loop_thread = t
+        _running_live = cfg.configured_live()   # the mode THIS run starts with
         t.start()
         return True, "LIVE — real orders will be placed." if not cfg.dry_run else "Started in DRY-RUN (no real orders)."
 
@@ -1477,7 +1502,8 @@ function render(s){
   rp.textContent = running ? "● RUNNING" : "● STOPPED";
   rp.className = "pill run "+(running?"on":"off");
   const mp=$("modePill");
-  mp.textContent = s.mode;
+  const restart = !!s.restart_required;
+  mp.textContent = restart ? s.mode+" ⚠ restart" : s.mode;
   mp.className = "pill "+(s.mode==="LIVE"?"live":"dry");
   const tb=$("toggleBtn");
   tb.textContent = running ? "Stop" : "Start";
@@ -1485,8 +1511,10 @@ function render(s){
 
   $("stState").textContent = running ? "running" : "stopped";
   $("stState").className = "v "+(running?"green":"");
-  $("stMode").textContent = s.mode;
-  $("stMode").className = "v "+(s.mode==="LIVE"?"green":"gold");
+  $("stMode").textContent = restart
+    ? s.mode+" — settings changed: Stop, then Start to apply"
+    : s.mode;
+  $("stMode").className = "v "+(restart?"red":(s.mode==="LIVE"?"green":"gold"));
   $("stSize").textContent = "$"+Number(s.size_usd).toLocaleString(undefined,{maximumFractionDigits:2})+" @ "+s.leverage+"x";
   const rt=Number(s.realized_today)||0;
   $("stRealized").textContent = (rt>=0?"+":"")+"$"+rt.toFixed(2);
