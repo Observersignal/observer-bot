@@ -48,11 +48,13 @@ KNOWN_ENV_KEYS = (
     "OBSERVER_FEED_TOKEN",
     "HL_ACCOUNT_ADDRESS",
     "HL_API_SECRET",
+    "SIZING_MODE",
     "BASE_CAPITAL",
     "RISK_PER_TRADE_PCT",
     "LEVERAGE",
     "ISOLATED",
     "SIZE_USD",
+    "BASE_MARGIN_USD",
     "MAX_OPEN",
     "DAILY_LOSS_LIMIT_USD",
     "DRY_RUN",
@@ -109,9 +111,11 @@ class Config:
     api_secret: str
 
     # Sizing & leverage
+    sizing_mode: str           # "fixed" (mismo tamaño para todo) | "model" (sigue los tramos del modelo)
     base_capital: float        # capital base total del cliente (USD)
     risk_per_trade_pct: float  # % del capital base por operación (1.0 = misma proporción que el modelo)
-    size_usd: float            # margen por op derivado = base_capital * pct/100 (o SIZE_USD si se fuerza)
+    size_usd: float            # margen por op en modo fixed = base_capital * pct/100 (o SIZE_USD si se fuerza)
+    base_margin_usd: float     # margen de referencia (×1.0) en modo model; el modelo aplica ×1.5 large / ×0.5 small
     leverage: float
     isolated: bool             # margen isolated (True) vs cross (False)
 
@@ -177,6 +181,22 @@ class Config:
             access = "EXPIRED — renew with /bot on Telegram"
         else:
             access = f"~{days:.0f} day(s) left (renew with /bot before it lapses)"
+        if self.sizing_mode == "model":
+            sizing = (
+                f"  sizing mode      : MODEL (follow market-cap tiers)\n"
+                f"  base margin      : {self.base_margin_usd:g} USD (×1.0 reference)\n"
+                f"    → large-cap    : {self.base_margin_usd * 1.5:g} USD @ 10x\n"
+                f"    → small-cap    : {self.base_margin_usd * 0.5:g} USD @ 5x\n"
+                f"    → micro-cap    : not traded\n"
+            )
+        else:
+            sizing = (
+                f"  sizing mode      : FIXED (same size for every coin)\n"
+                f"  size per trade   : {self.size_usd:g} USD margin "
+                f"({self.risk_per_trade_pct:g}% of base) @ {self.leverage:g}x "
+                f"{'isolated' if self.isolated else 'cross'}\n"
+                f"                     (micro-caps <$100M are never traded)\n"
+            )
         return (
             f"  feed source      : {feed}\n"
             f"  signal access    : {access}\n"
@@ -184,9 +204,7 @@ class Config:
             f"  account address  : {addr}\n"
             f"  api secret       : {secret}\n"
             f"  base capital     : {self.base_capital:g} USD\n"
-            f"  size per trade   : {self.size_usd:g} USD margin "
-            f"({self.risk_per_trade_pct:g}% of base) @ {self.leverage:g}x "
-            f"{'isolated' if self.isolated else 'cross'}\n"
+            + sizing +
             f"  max open         : {self.max_open}\n"
             f"  daily loss limit : {self.daily_loss_limit_usd:g} USD\n"
             f"  poll interval    : {self.poll_seconds}s\n"
@@ -206,14 +224,23 @@ def load_config() -> Config:
     risk_pct = _get_float("RISK_PER_TRADE_PCT", 1.0)
     size_override = _get_float("SIZE_USD", 0.0)  # 0 = derivar del capital base (avanzado: forzar $ fijos)
     size_usd = size_override if size_override > 0 else round(base_capital * risk_pct / 100.0, 2)
+    # Modo model: el margen de referencia (×1.0) por defecto = el mismo size_usd, así el cliente
+    # solo cambia el selector de modo sin re-teclear cifras. BASE_MARGIN_USD lo sobreescribe.
+    base_margin_override = _get_float("BASE_MARGIN_USD", 0.0)
+    base_margin_usd = base_margin_override if base_margin_override > 0 else size_usd
+    sizing_mode = (_get_str("SIZING_MODE", "fixed").strip().lower() or "fixed")
+    if sizing_mode not in ("fixed", "model"):
+        sizing_mode = "fixed"
     return Config(
         api_url=_get_str("OBSERVER_API_URL", "https://api.theobserversignalbot.com"),
         feed_token=_get_str("OBSERVER_FEED_TOKEN"),
         account_address=_get_str("HL_ACCOUNT_ADDRESS"),
         api_secret=_get_str("HL_API_SECRET"),
+        sizing_mode=sizing_mode,
         base_capital=base_capital,
         risk_per_trade_pct=risk_pct,
         size_usd=size_usd,
+        base_margin_usd=base_margin_usd,
         leverage=_get_float("LEVERAGE", 10.0),
         isolated=_get_bool("ISOLATED", True),
         max_open=_get_int("MAX_OPEN", 10),

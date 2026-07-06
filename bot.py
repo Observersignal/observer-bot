@@ -25,6 +25,7 @@ from typing import Callable, Optional
 import config
 import feed
 import risk
+import sizing
 import state as state_mod
 from executor import Executor
 
@@ -124,11 +125,15 @@ def _handle_event(
                 age_min,
             )
             return
+        margin, lev, why = sizing.plan_open(coin, cfg, ev)
+        if margin is None:
+            log.info("skip OPEN %s %s — %s", side, coin, why)
+            return
         allowed, reason = risk.can_open(st, cfg)
         if not allowed:
             log.warning("skip OPEN %s %s — blocked: %s", side, coin, reason)
             return
-        res = ex.open(coin, side, cfg.size_usd, cfg.leverage)
+        res = ex.open(coin, side, margin, lev)
         if res.get("ok"):
             st.record_open(coin, side)
 
@@ -157,7 +162,17 @@ def _handle_event(
                 _apply_realized(res, st)
                 _flag_undetermined_if_needed(res, st, cfg)
             return
-        # A flip opens a new position; honour the open-side risk checks.
+        # A flip opens a new position; honour the open-side risk checks AND the
+        # sizing policy. If the new side isn't tradable (micro-cap), close only.
+        margin, lev, why = sizing.plan_open(coin, cfg, ev)
+        if margin is None:
+            log.info("FLIP %s — new side not traded (%s); closing only", coin, why)
+            res = ex.close(coin)
+            if res.get("ok"):
+                st.record_close(coin)
+                _apply_realized(res, st)
+                _flag_undetermined_if_needed(res, st, cfg)
+            return
         allowed, reason = risk.can_open(st, cfg)
         if not allowed:
             # Still close the existing side to reduce risk, but don't reopen.
@@ -173,7 +188,7 @@ def _handle_event(
         # Act on the flip result's explicit closed/reopened flags so local state
         # tracks reality: if the close leg ran, drop the old side; only record a
         # new position if the reopen actually succeeded (otherwise we're FLAT).
-        res = ex.flip(coin, side, cfg.size_usd, cfg.leverage)
+        res = ex.flip(coin, side, margin, lev)
         if res.get("closed"):
             st.record_close(coin)
             _apply_realized(res, st)  # realized comes from the close leg
@@ -193,11 +208,15 @@ def _handle_event(
                 age_min,
             )
             return
+        margin, lev, why = sizing.plan_open(coin, cfg, ev)
+        if margin is None:
+            log.info("skip INCREASE %s %s — %s", side, coin, why)
+            return
         allowed, reason = risk.can_open(st, cfg)
         if not allowed:
             log.warning("skip INCREASE %s %s — blocked: %s", side, coin, reason)
             return
-        res = ex.open(coin, side, cfg.size_usd, cfg.leverage)
+        res = ex.open(coin, side, margin, lev)
         if res.get("ok"):
             st.record_open(coin, side)
 

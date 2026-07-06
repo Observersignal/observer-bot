@@ -105,6 +105,7 @@ _FLOAT_KEYS = (
     "RISK_PER_TRADE_PCT",
     "LEVERAGE",
     "SIZE_USD",
+    "BASE_MARGIN_USD",
     "DAILY_LOSS_LIMIT_USD",
 )
 _INT_KEYS = ("MAX_OPEN", "POLL_SECONDS")
@@ -262,6 +263,13 @@ def _validate_and_normalise(body: Dict[str, Any]) -> Tuple[Dict[str, str], "list
         if key == "OBSERVER_API_URL" and sval and not sval.startswith(("http://", "https://")):
             errors.append("OBSERVER_API_URL must start with http:// or https://")
             continue
+        if key == "SIZING_MODE":
+            low = sval.lower()
+            if low not in ("fixed", "model"):
+                errors.append("SIZING_MODE must be 'fixed' or 'model'")
+                continue
+            updates[key] = low
+            continue
         updates[key] = sval
 
     # Don't bother writing identical no-op secret kept values; harmless anyway.
@@ -325,8 +333,10 @@ def _build_status() -> Dict[str, Any]:
         "dry_run": cfg.dry_run,
         "mode": mode,
         "restart_required": restart_required,
+        "sizing_mode": cfg.sizing_mode,
         "base_capital": cfg.base_capital,
         "size_usd": cfg.size_usd,
+        "base_margin_usd": cfg.base_margin_usd,
         "risk_per_trade_pct": cfg.risk_per_trade_pct,
         "leverage": cfg.leverage,
         "isolated": cfg.isolated,
@@ -359,9 +369,11 @@ def _config_summary_masked() -> Dict[str, Any]:
     """A safe (secret-masked) echo of the current config for POST responses."""
     cfg = config.CFG
     return {
+        "sizing_mode": cfg.sizing_mode,
         "base_capital": cfg.base_capital,
         "risk_per_trade_pct": cfg.risk_per_trade_pct,
         "size_usd": cfg.size_usd,
+        "base_margin_usd": cfg.base_margin_usd,
         "leverage": cfg.leverage,
         "isolated": cfg.isolated,
         "max_open": cfg.max_open,
@@ -1059,6 +1071,17 @@ _PAGE = r"""<!DOCTYPE html>
           <div class="whatis"><b>What is this?</b> Enter your total trading capital — the bot automatically sizes
             each trade to the same proportion as the model (<b>1%</b>). You don't size trades by hand.</div>
           <div class="field">
+            <label>Sizing mode</label>
+            <select id="SIZING_MODE" onchange="recalcHint()">
+              <option value="fixed">Same size for every coin (fixed)</option>
+              <option value="model">Follow the model by market-cap tier</option>
+            </select>
+            <div class="help"><b>Fixed</b>: the same margin &amp; leverage on every signal. <b>Follow the model</b>:
+              the bot mirrors the model's market-cap policy — large-caps bigger &amp; 10x, small-caps half-size &amp; 5x.
+              Either way, <b>micro-caps (&lt;$100M) are never traded</b> (the model refuses them).</div>
+            <div class="hint" id="modePreview">—</div>
+          </div>
+          <div class="field">
             <label>Base capital (USD)</label>
             <input type="number" id="BASE_CAPITAL" step="any" oninput="recalcHint()" />
             <div class="hint" id="sizeHint">≈ — per trade</div>
@@ -1194,7 +1217,7 @@ _PAGE = r"""<!DOCTYPE html>
 <div class="toast" id="toast"></div>
 
 <script>
-const FIELDS = ["BASE_CAPITAL","RISK_PER_TRADE_PCT","LEVERAGE","ISOLATED",
+const FIELDS = ["SIZING_MODE","BASE_CAPITAL","RISK_PER_TRADE_PCT","LEVERAGE","ISOLATED",
   "HL_ACCOUNT_ADDRESS","HL_API_SECRET","OBSERVER_FEED_TOKEN","OBSERVER_API_URL",
   "MAX_OPEN","DAILY_LOSS_LIMIT_USD","DRY_RUN","POLL_SECONDS","ALLOW_FLIP","ALLOW_INCREASE"];
 const BOOLS = ["ISOLATED","DRY_RUN","ALLOW_FLIP","ALLOW_INCREASE"];
@@ -1231,6 +1254,20 @@ function recalcHint(){
   $("sizeHint").textContent = m>0
     ? "≈ $"+m.toLocaleString(undefined,{maximumFractionDigits:2})+" per trade ("+pct+"% of your capital)"
     : "≈ — per trade";
+  // Mode preview: show what each market-cap tier becomes with this base margin.
+  const mode=($("SIZING_MODE")||{}).value||"fixed";
+  const usd=x=>"$"+x.toLocaleString(undefined,{maximumFractionDigits:2});
+  const prev=$("modePreview");
+  if(prev){
+    if(m<=0){ prev.textContent="—"; }
+    else if(mode==="model"){
+      prev.innerHTML="Follow the model: <b>large</b> "+usd(m*1.5)+" @10x · <b>small</b> "+usd(m*0.5)
+        +" @5x · <b>micro</b> skipped";
+    } else {
+      const lev=parseFloat($("LEVERAGE").value)||10;
+      prev.innerHTML="Fixed: <b>"+usd(m)+" @"+lev+"x</b> on every coin · <b>micro</b> skipped";
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1338,6 +1375,7 @@ async function prefill(){
     const r=await fetch("/api/status"); const s=await r.json();
     feedTokenSet = s.feed_token==="set";
     addressSet   = !!(s.account_address && String(s.account_address).trim());
+    $("SIZING_MODE").value = (s.sizing_mode==="model") ? "model" : "fixed";
     $("BASE_CAPITAL").value=s.base_capital;
     $("RISK_PER_TRADE_PCT").value=s.risk_per_trade_pct;
     $("LEVERAGE").value=s.leverage;
@@ -1515,7 +1553,13 @@ function render(s){
     ? s.mode+" — settings changed: Stop, then Start to apply"
     : s.mode;
   $("stMode").className = "v "+(restart?"red":(s.mode==="LIVE"?"green":"gold"));
-  $("stSize").textContent = "$"+Number(s.size_usd).toLocaleString(undefined,{maximumFractionDigits:2})+" @ "+s.leverage+"x";
+  if(s.sizing_mode==="model"){
+    const b=Number(s.base_margin_usd||s.size_usd);
+    const usd=x=>"$"+x.toLocaleString(undefined,{maximumFractionDigits:2});
+    $("stSize").textContent = "model · large "+usd(b*1.5)+"@10x · small "+usd(b*0.5)+"@5x · micro skip";
+  } else {
+    $("stSize").textContent = "fixed · $"+Number(s.size_usd).toLocaleString(undefined,{maximumFractionDigits:2})+" @ "+s.leverage+"x · micro skip";
+  }
   const rt=Number(s.realized_today)||0;
   $("stRealized").textContent = (rt>=0?"+":"")+"$"+rt.toFixed(2);
   $("stRealized").className = "v "+(rt>0?"green":(rt<0?"red":""));
