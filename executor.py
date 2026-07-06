@@ -13,6 +13,7 @@ adapter only logs exactly what it WOULD do and returns a fake-ok result.
 from __future__ import annotations
 
 import logging
+import math
 import time
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
@@ -74,6 +75,11 @@ class Executor:
 
         self.info = None
         self.exchange = None
+        # Per-coin size precision (Hyperliquid `szDecimals`), lazily fetched from
+        # meta() and cached. An order whose size has more decimals than the
+        # asset allows is rejected as "invalid size", so this is mandatory — not
+        # a nicety. None until first lookup.
+        self._sz_decimals: "Optional[dict]" = None
 
         # Info (public market data) is always useful; build it if we can.
         if _SDK_OK and Info is not None:
@@ -198,6 +204,28 @@ class Executor:
             log.warning("mark_price(%s) failed: %s", coin, exc)
             return None
 
+    def _sz_decimals_for(self, coin: str) -> Optional[int]:
+        """
+        Size precision (number of decimals) Hyperliquid allows for `coin`, from
+        the perp `meta()` universe. Cached after the first successful fetch.
+        Returns None if it can't be determined (caller falls back to a heuristic).
+        """
+        if self._sz_decimals is None and self.info is not None:
+            try:
+                meta = self.info.meta()
+                self._sz_decimals = {
+                    a["name"]: int(a["szDecimals"])
+                    for a in meta.get("universe", [])
+                    if isinstance(a, dict) and a.get("name") is not None
+                    and a.get("szDecimals") is not None
+                }
+            except Exception as exc:
+                log.warning("could not load szDecimals from meta: %s", exc)
+                self._sz_decimals = {}   # cache the failure; retry next restart
+        if not self._sz_decimals:
+            return None
+        return self._sz_decimals.get(coin)
+
     def _price_or_fallback(self, coin: str) -> Optional[float]:
         """
         Live mark price, or — in DRY-RUN only — an indicative placeholder so
@@ -223,11 +251,22 @@ class Executor:
             return 0.0
         notional = size_usd * leverage
         size = notional / price
-        return self._round_size(size)
+        return self._round_size(size, coin)
 
-    @staticmethod
-    def _round_size(size: float) -> float:
-        """Round order size to a precision that suits the coin's price range."""
+    def _round_size(self, size: float, coin: Optional[str] = None) -> float:
+        """
+        Round order size to the coin's Hyperliquid `szDecimals`. HL rejects an
+        order whose size has more decimals than the asset allows ("invalid
+        size"), so we round to exactly that precision. Falls back to a
+        magnitude-based heuristic only when szDecimals can't be fetched (offline
+        / dry-run without an Info client).
+        """
+        dec = self._sz_decimals_for(coin) if coin else None
+        if dec is not None:
+            # Round DOWN to szDecimals so a rounding-up never nudges the notional
+            # past the intended margin/leverage (and never adds a stray decimal).
+            factor = 10 ** dec
+            return math.floor(size * factor) / factor
         if size >= 1000:
             return round(size, 1)
         if size >= 1:
