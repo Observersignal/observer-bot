@@ -1,5 +1,8 @@
 .env
 state.json
+run_intent.json
+bot.out.log
+bot.err.log
 __pycache__/
 *.pyc
 .DS_Store

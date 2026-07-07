@@ -96,6 +96,36 @@ def _is_running() -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Persisted run intent — so a reboot/crash resumes the loop IFF the user had it
+# running, in the SAME mode. A deliberate Stop clears it (no resume); an
+# unexpected death leaves it set (resume). LIVE resumes only if it was LIVE —
+# this persisted intent IS the durable record of the confirmation the user gave
+# at Start, so auto-resume may pass confirm_live without re-prompting.
+# ---------------------------------------------------------------------------
+_INTENT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "run_intent.json")
+
+
+def _save_run_intent(run: bool, live: bool) -> None:
+    """Best-effort persist of the user's run intent. Never breaks Start/Stop."""
+    try:
+        tmp = f"{_INTENT_PATH}.tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"run": bool(run), "live": bool(live)}))
+        os.replace(tmp, _INTENT_PATH)
+    except Exception:
+        pass
+
+
+def _load_run_intent() -> Dict[str, Any]:
+    try:
+        with open(_INTENT_PATH, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return {"run": bool(data.get("run")), "live": bool(data.get("live"))}
+    except Exception:
+        return {"run": False, "live": False}
+
+
+# ---------------------------------------------------------------------------
 # Config <-> .env helpers (only touch KNOWN_ENV_KEYS, preserve everything else)
 # ---------------------------------------------------------------------------
 # Allowed value types for validation of incoming form fields.
@@ -447,6 +477,8 @@ def _start_loop(confirm_live: bool = False) -> Tuple[bool, str]:
         _loop_thread = t
         _running_live = cfg.configured_live()   # the mode THIS run starts with
         t.start()
+        # Record the intent so a later reboot/crash resumes in the same mode.
+        _save_run_intent(True, _running_live)
         return True, "LIVE — real orders will be placed." if not cfg.dry_run else "Started in DRY-RUN (no real orders)."
 
 
@@ -457,6 +489,8 @@ def _stop_loop() -> Tuple[bool, str]:
             return False, "Bot is not running."
         if _stop_event is not None:
             _stop_event.set()
+        # A DELIBERATE Stop clears the resume intent: next launch stays stopped.
+        _save_run_intent(False, False)
         return True, "Stopping… the loop will save state and wind down."
 
 
@@ -1612,6 +1646,15 @@ def serve() -> None:
     print("  (bound to 127.0.0.1 only — not reachable from your network)")
     print("  Press Ctrl-C here to shut the panel down.")
     print("=" * 64)
+    # Auto-resume the loop IFF the user had it running when it last went down
+    # (a reboot/crash leaves the intent set; a deliberate Stop clears it). LIVE
+    # resumes only if it was LIVE — the persisted intent is the confirmation, so
+    # we pass confirm_live and don't re-prompt. Bad config (missing keys) makes
+    # _start_loop refuse and we stay safely stopped.
+    intent = _load_run_intent()
+    if intent.get("run"):
+        ok, msg = _start_loop(confirm_live=bool(intent.get("live")))
+        print(f"  Auto-resume: {msg}" if ok else f"  Auto-resume skipped: {msg}")
     try:
         webbrowser.open(url)
     except Exception:
