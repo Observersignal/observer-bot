@@ -386,8 +386,15 @@ class Executor:
     # ------------------------------------------------------------------ #
     # Trading
     # ------------------------------------------------------------------ #
-    def open(self, coin: str, side: str, size_usd: float, leverage: float) -> dict:
-        """Open a market position. side = 'long' | 'short'."""
+    def open(self, coin: str, side: str, size_usd: float, leverage: float,
+             fresh: bool = True) -> dict:
+        """Open a market position. side = 'long' | 'short'.
+
+        `fresh` = this is a brand-new position (a plain open or a flip's reopen), so
+        the intended margin mode MUST be confirmed before opening. Set fresh=False for
+        an add/increase on an ALREADY-open position: HL locks the margin mode at the
+        initial open and rejects a re-set while a position is live, which is expected.
+        """
         is_buy = side == "long"
         size = self.size_for(coin, size_usd, leverage)
         price = self._price_or_fallback(coin)
@@ -418,7 +425,34 @@ class Executor:
         try:
             # SDK: leverage + modo de margen. update_leverage(leverage, coin, is_cross).
             # is_cross=False -> ISOLATED (lo que sigue el modelo); True -> cross.
-            self.exchange.update_leverage(int(leverage), coin, not self.cfg.isolated)
+            # HL devuelve HTTP 200 incluso en errores de negocio y el SDK NO lanza en
+            # esos casos → hay que COMPROBAR el ack. Si no se confirma y abrimos igual,
+            # la posición hereda el modo por defecto de la cuenta (cross) y rompe en
+            # silencio el modelo de riesgo isolated-por-trade.
+            mode = "isolated" if self.cfg.isolated else "cross"
+            lev_res = self.exchange.update_leverage(
+                int(leverage), coin, not self.cfg.isolated
+            )
+            lev_ok = isinstance(lev_res, dict) and lev_res.get("status") == "ok"
+            if not lev_ok:
+                if fresh:
+                    # Apertura nueva sin poder fijar el margen → NO abrir en el modo
+                    # equivocado. Mejor no ejecutar que ejecutar en cross por error.
+                    log.error(
+                        "OPEN %s %s ABORTED — could not set %s margin/leverage (%r); "
+                        "refusing to open in the wrong margin mode",
+                        side.upper(), coin, mode, lev_res,
+                    )
+                    return _err(
+                        f"margin-mode setup failed ({mode}): {lev_res!r}",
+                        coin=coin, side=side, raw=lev_res,
+                    )
+                # Add/increase sobre una posición ya abierta: el modo quedó fijado en la
+                # apertura inicial y HL rechaza re-fijarlo con posición viva → esperado.
+                log.warning(
+                    "update_leverage on %s not acked (%r) — expected for an add on an "
+                    "open position; keeping the existing margin mode", coin, lev_res,
+                )
             # SDK: market open with a slippage cap. market_open(coin, is_buy, sz,
             # px=None, slippage=...). slippage is a fraction (0.01 = 1%): an order
             # that can't fill within the cap is rejected instead of filling at any

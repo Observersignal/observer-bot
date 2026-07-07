@@ -216,7 +216,9 @@ def _handle_event(
         if not allowed:
             log.warning("skip INCREASE %s %s — blocked: %s", side, coin, reason)
             return
-        res = ex.open(coin, side, margin, lev)
+        # Add on an already-open position: don't require re-setting the margin mode
+        # (HL locked it at the initial open and rejects a re-set while a position is live).
+        res = ex.open(coin, side, margin, lev, fresh=False)
         if res.get("ok"):
             st.record_open(coin, side)
 
