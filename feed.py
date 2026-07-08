@@ -4,8 +4,13 @@ feed.py — read signals from The Observer's authenticated feed.
 This client only CONSUMES signals. It knows nothing about how a signal is
 produced; from its point of view a signal is just:
 
-    {"id": str, "event": "open"|"close"|"flip"|"increase",
-     "coin": str, "side": "long"|"short", "ts": int}
+    {"id": str, "event": "open"|"close"|"flip"|"increase"|"decrease",
+     "coin": str, "side": "long"|"short", "ts": int, "units": int?}
+
+`units` (optional) = live copies of (coin, side) on the model AFTER this event.
+On `increase`/`decrease` the bot drives its net position to `units` units:
+an `increase` adds a unit; a `decrease` reduce-only trims the fraction
+(units_prev - units) / units_prev of the current position. Absent => assume 1.
 
 NOTE: the real `/api/signals/feed` endpoint is built separately on the
 server (phase F1). This client just polls it. If no feed token is set, the
@@ -73,7 +78,7 @@ def _valid_signal(s: object) -> bool:
         return False
     if not isinstance(s.get("id"), str) or not s["id"]:
         return False
-    if s.get("event") not in ("open", "close", "flip", "increase"):
+    if s.get("event") not in ("open", "close", "flip", "increase", "decrease"):
         return False
     if not isinstance(s.get("coin"), str) or not s["coin"]:
         return False

@@ -135,7 +135,7 @@ def _handle_event(
             return
         res = ex.open(coin, side, margin, lev)
         if res.get("ok"):
-            st.record_open(coin, side)
+            st.record_open(coin, side, units=int(ev.get("units") or 1))
 
     elif event == "close":
         # ALWAYS execute, regardless of age — closing late beats not closing.
@@ -212,15 +212,75 @@ def _handle_event(
         if margin is None:
             log.info("skip INCREASE %s %s — %s", side, coin, why)
             return
+        # `units` = model copies of (coin,side) AFTER this event. Add the delta over
+        # what we already hold, each unit at our own configured size (margin). If we
+        # somehow missed the original open (held 0), open the whole target now.
+        units_prev = st.units_of(coin)
+        units_new = int(ev.get("units") or (units_prev + 1))
+        add = units_new - units_prev if units_prev > 0 else units_new
+        if add <= 0:
+            # Already at/above target (a duplicate or stale increase): just sync count.
+            if units_prev > 0:
+                st.set_units(coin, units_new)
+            log.info(
+                "INCREASE %s %s — already at %d unit(s); nothing to add", side, coin, units_prev
+            )
+            return
         allowed, reason = risk.can_open(st, cfg)
         if not allowed:
             log.warning("skip INCREASE %s %s — blocked: %s", side, coin, reason)
             return
         # Add on an already-open position: don't require re-setting the margin mode
         # (HL locked it at the initial open and rejects a re-set while a position is live).
-        res = ex.open(coin, side, margin, lev, fresh=False)
+        # `fresh` only when we hold nothing yet (missed open) — then the margin mode
+        # must be confirmed as for a plain open.
+        res = ex.open(coin, side, margin * add, lev, fresh=(units_prev == 0))
         if res.get("ok"):
-            st.record_open(coin, side)
+            st.record_open(coin, side, units=units_new)
+
+    elif event == "decrease":
+        # A decrease closes ONE (or more) of the N model copies: trim the position
+        # proportionally, leaving the rest open. Like close it REDUCES risk, so it
+        # ALWAYS runs regardless of signal age.
+        units_prev = st.units_of(coin)
+        units_new = int(ev.get("units") or 0)
+        if units_prev <= 0:
+            # We don't think we hold this coin — a decrease to >0 means we missed the
+            # open/increase; a reconcile will adopt reality. Nothing safe to trim now.
+            log.info("DECREASE %s %s — no tracked position; leaving to reconcile", side, coin)
+            return
+        if units_new <= 0:
+            # Nothing should remain: this is really a full close.
+            res = ex.close(coin)
+            if res.get("ok"):
+                st.record_close(coin)
+                _apply_realized(res, st)
+                _flag_undetermined_if_needed(res, st, cfg)
+            return
+        if units_new >= units_prev:
+            # Target at/above what we hold (stale or duplicate decrease): sync, no trim.
+            st.set_units(coin, units_new)
+            log.info(
+                "DECREASE %s %s — target %d >= held %d; nothing to trim",
+                side, coin, units_new, units_prev,
+            )
+            return
+        fraction = (units_prev - units_new) / float(units_prev)
+        log.info(
+            "DECREASE %s %s — %d -> %d unit(s): reduce-only %.1f%%",
+            side, coin, units_prev, units_new, fraction * 100,
+        )
+        res = ex.reduce(coin, fraction)
+        if res.get("ok"):
+            if res.get("no_position"):
+                # Exchange says flat — drop tracking so we don't keep trimming air.
+                st.record_close(coin)
+            else:
+                st.set_units(coin, units_new)
+            _apply_realized(res, st)
+            _flag_undetermined_if_needed(res, st, cfg)
+        # On a NON-ok reduce (e.g. size unreadable), keep units as-is: a later
+        # decrease or reconcile corrects it — never desync the count on a failed trim.
 
     else:
         log.warning("unknown event type '%s' — ignoring", event)
