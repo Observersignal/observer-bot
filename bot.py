@@ -28,6 +28,7 @@ import risk
 import sizing
 import state as state_mod
 from executor import Executor
+from single_instance import AlreadyRunning, SingleInstanceLock
 
 logging.basicConfig(
     level=logging.INFO,
@@ -266,6 +267,7 @@ def run_loop(
     # after a save, so each run_loop call sees the latest values.
     cfg = config.CFG
 
+    lock: "Optional[SingleInstanceLock]" = None
     sink_handler: "Optional[_SinkHandler]" = None
     if log_sink is not None:
         sink_handler = _SinkHandler(log_sink)
@@ -277,6 +279,21 @@ def run_loop(
 
     try:
         _banner(cfg)
+
+        # Single-instance guard: only ONE live executor may run per Hyperliquid
+        # account per machine. Two live bots on one account both mirror every
+        # signal, doubling every real order. Acquire the OS-level lock BEFORE we
+        # touch the exchange; if another live process holds it, refuse to run
+        # (place no orders) instead of silently duplicating. Dry-run/mock never
+        # locks — running several practice loops is harmless.
+        if cfg.configured_live():
+            lock = SingleInstanceLock(cfg.account_address)
+            try:
+                lock.acquire()
+            except AlreadyRunning as exc:
+                lock = None
+                log.error("%s", exc)
+                return 2
 
         st = state_mod.load()
 
@@ -392,6 +409,8 @@ def run_loop(
         log.info("state saved. goodbye.")
         return 0
     finally:
+        if lock is not None:
+            lock.release()
         if sink_handler is not None:
             logging.getLogger("observer").removeHandler(sink_handler)
 
