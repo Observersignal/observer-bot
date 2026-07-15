@@ -204,6 +204,30 @@ class Executor:
             log.warning("mark_price(%s) failed: %s", coin, exc)
             return None
 
+    def position_size(self, coin: str) -> Optional[float]:
+        """
+        Signed size (`szi`) of the current position for `coin` on the client's
+        account: >0 long, <0 short, 0.0 if flat. None if it can't be read (no Info
+        client / network error / no account) — callers must treat None as "unknown"
+        and NOT act, so a partial close never sizes off a guess.
+        """
+        if self.info is None or not self.cfg.account_address:
+            return None
+        try:
+            user_state = self.info.user_state(self.cfg.account_address)
+        except Exception as exc:
+            log.warning("position_size(%s): user_state failed: %s", coin, exc)
+            return None
+        try:
+            for ap in (user_state or {}).get("assetPositions", []) or []:
+                pos = ap.get("position") if isinstance(ap, dict) else None
+                if isinstance(pos, dict) and pos.get("coin") == coin:
+                    return float(pos.get("szi") or 0.0)
+        except (TypeError, ValueError) as exc:
+            log.warning("position_size(%s): could not parse szi: %s", coin, exc)
+            return None
+        return 0.0
+
     def _sz_decimals_for(self, coin: str) -> Optional[int]:
         """
         Size precision (number of decimals) Hyperliquid allows for `coin`, from
@@ -523,6 +547,76 @@ class Executor:
         except Exception as exc:
             log.error("close(%s) failed: %s", coin, exc)
             return _err(f"close failed: {exc}", coin=coin)
+
+    def reduce(self, coin: str, fraction: float) -> dict:
+        """
+        Reduce-only: close `fraction` (0..1) of the CURRENT position for `coin`,
+        leaving the rest open. Used to mirror a model `decrease` (one of N copies
+        closed) proportionally, e.g. 3->2 copies trims 1/3.
+
+        The size is taken from the REAL `szi` on the exchange at call time (not a
+        stored value), so it stays correct even if the client changed their size
+        mid-position. Uses market_close with an explicit size, which HL treats as
+        reduce-only (it can only shrink, never flip, the position).
+        """
+        fraction = max(0.0, min(1.0, float(fraction)))
+        if fraction <= 0.0:
+            return _ok(f"reduce {coin} by 0% (noop)", coin=coin, realized=None)
+        # A full (or near-full) trim is just a close — avoid leaving dust behind.
+        if fraction >= 0.999:
+            return self.close(coin)
+
+        if not self.live:
+            log.info("[DRY-RUN] REDUCE %s by %.1f%% (reduce-only)", coin, fraction * 100)
+            return _ok(
+                f"dry-run reduce {coin} {fraction:.0%}",
+                coin=coin, fraction=fraction, realized=None,
+            )
+
+        szi = self.position_size(coin)
+        if szi is None:
+            # Unknown real size — do NOT guess. Report so the caller keeps its
+            # units untouched and a later reconcile/decrease corrects things.
+            return _err("reduce: could not read position size", coin=coin)
+        if szi == 0.0:
+            log.warning("REDUCE %s: no open position on exchange (nothing to trim)", coin)
+            return _ok("reduce: no open position", coin=coin, no_position=True, realized=None)
+
+        size = self._round_size(abs(szi) * fraction, coin)
+        if size <= 0:
+            # The proportional slice rounds below the asset's min size — skip rather
+            # than accidentally closing the whole thing.
+            log.warning(
+                "REDUCE %s by %.1f%% rounds to size 0 (szi=%s) — skipping trim",
+                coin, fraction * 100, szi,
+            )
+            return _err(f"reduce size rounds to 0 for {coin}", coin=coin)
+
+        try:
+            # market_close with an explicit sz reduces only that many coins (reduce-only).
+            result = self.exchange.market_close(
+                coin, size, None, self.cfg.max_slippage_pct
+            )
+            if result is None:
+                log.warning("REDUCE %s: no open position on exchange", coin)
+                return _ok("reduce: no open position", coin=coin, no_position=True, realized=None)
+            accepted, detail = self._ack_ok(result)
+            if not accepted:
+                log.error("REDUCE %s REJECTED by exchange: %s", coin, detail)
+                return _err(f"reduce rejected: {detail}", coin=coin, raw=result)
+            realized = self._realized_pnl_for_oids(self._extract_oids(result))
+            log.info(
+                "REDUCE %s by %.1f%% (sz=%s) -> realized %s",
+                coin, fraction * 100, size,
+                f"{realized:.2f} USD" if realized is not None else "undetermined",
+            )
+            return _ok(
+                "live reduce", raw=result, coin=coin, size=size,
+                fraction=fraction, realized=realized,
+            )
+        except Exception as exc:
+            log.error("reduce(%s, %.3f) failed: %s", coin, fraction, exc)
+            return _err(f"reduce failed: {exc}", coin=coin)
 
     def flip(
         self, coin: str, new_side: str, size_usd: float, leverage: float

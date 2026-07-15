@@ -6,7 +6,10 @@ across restarts:
 
   - processed_ids       : signal ids we have already acted on (never act twice)
   - cursor              : how far through the feed we have read
-  - open_positions      : coin -> side, our local view of what we hold
+  - open_positions      : coin -> {"side", "units"}, our local view of what we hold.
+                          `units` = how many model copies this position mirrors, so a
+                          `decrease` can trim the right fraction. Legacy states stored a
+                          bare side string; those load as 1 unit transparently.
   - day                 : current UTC date (YYYY-MM-DD)
   - realized_today_usd  : realized PnL accumulated today (resets each UTC day)
 
@@ -107,11 +110,48 @@ class State:
             self._processed_set.discard(r)
 
     # -- positions ------------------------------------------------------- #
-    def record_open(self, coin: str, side: str) -> None:
-        self.open_positions[coin] = side
+    @staticmethod
+    def _as_pos(v) -> "Optional[dict]":
+        """Normalize a stored position to {'side', 'units'}. Accepts the legacy bare
+        side string (units defaults to 1) and the current dict form. None passes through."""
+        if v is None:
+            return None
+        if isinstance(v, dict):
+            side = v.get("side")
+            if side not in ("long", "short"):
+                return None
+            try:
+                units = int(v.get("units") or 1)
+            except (TypeError, ValueError):
+                units = 1
+            return {"side": side, "units": max(1, units)}
+        # legacy: a bare "long"/"short" string
+        if v in ("long", "short"):
+            return {"side": v, "units": 1}
+        return None
+
+    def record_open(self, coin: str, side: str, units: int = 1) -> None:
+        self.open_positions[coin] = {"side": side, "units": max(1, int(units))}
 
     def record_close(self, coin: str) -> None:
         self.open_positions.pop(coin, None)
+
+    def set_units(self, coin: str, units: int) -> None:
+        """Update the tracked unit count of an OPEN position (no-op if we don't hold it)."""
+        pos = self._as_pos(self.open_positions.get(coin))
+        if pos is None:
+            return
+        pos["units"] = max(1, int(units))
+        self.open_positions[coin] = pos
+
+    def side_of(self, coin: str) -> "Optional[str]":
+        pos = self._as_pos(self.open_positions.get(coin))
+        return pos["side"] if pos else None
+
+    def units_of(self, coin: str) -> int:
+        """Units of the tracked position for `coin`, or 0 if we don't hold it."""
+        pos = self._as_pos(self.open_positions.get(coin))
+        return pos["units"] if pos else 0
 
     def count_open(self) -> int:
         return len(self.open_positions)
@@ -131,9 +171,23 @@ class State:
         could be recomputed) reset today's realized PnL to the authoritative
         value, clearing the pnl_undetermined pause. `realized_today` is None when
         the fills lookup failed — then we keep the current counter and the pause.
+
+        `positions` is {coin: side} from HL (which NETS multiple copies into one
+        position, so it cannot report `units`). We therefore PRESERVE our tracked
+        `units` for any coin still open on the SAME side; a coin HL shows flat is
+        dropped, and a coin open with an unexpected/opposite side (a missed
+        flip/open) is adopted as 1 unit. This keeps the fraction a `decrease` trims
+        correct across reconciles.
         """
         self._roll_day_if_needed()
-        self.open_positions = dict(positions or {})
+        merged: dict = {}
+        for coin, side in (positions or {}).items():
+            prev = self._as_pos(self.open_positions.get(coin))
+            if prev is not None and prev["side"] == side:
+                merged[coin] = {"side": side, "units": prev["units"]}
+            else:
+                merged[coin] = {"side": side, "units": 1}
+        self.open_positions = merged
         if realized_today is not None:
             self.realized_today_usd = float(realized_today)
             self.pnl_undetermined = False
