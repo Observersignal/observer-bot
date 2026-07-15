@@ -27,6 +27,7 @@ from typing import List, Tuple
 import requests
 
 import config
+from version import __version__
 
 log = logging.getLogger("observer.feed")
 
@@ -116,6 +117,12 @@ def poll(cursor: str) -> Tuple[List[dict], str]:
         "Authorization": f"Bearer {cfg.feed_token}",
         "X-Feed-Token": cfg.feed_token,
         "Accept": "application/json",
+        # Tell the server which signal contract we understand. It serves the classic
+        # open/close feed to bots that don't announce a version (or announce < 1.1.0), and
+        # increase/decrease + units to the ones that do. Without this the server can only
+        # switch contracts for everyone at once, which is how an old bot ends up dropping
+        # 'decrease' events and holding a position the model already trimmed.
+        "X-Bot-Version": __version__,
     }
     # The feed's `since` is an integer (empty string -> HTTP 422). On a
     # brand-new install the cursor is empty, so send "0": the first poll then
