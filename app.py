@@ -332,9 +332,16 @@ def _build_status() -> Dict[str, Any]:
     cfg = config.CFG
     try:
         st = state_mod.load()
-        open_positions = [
-            {"coin": coin, "side": side} for coin, side in st.open_positions.items()
-        ]
+        # `open_positions` values are the {side, units} form since multi-position; normalize so the
+        # API always exposes `side` as a plain string (+ `units`). Emitting the raw dict as `side`
+        # crashed the panel's render (p.side.toUpperCase is not a function) and, via a generic catch,
+        # surfaced as a misleading "couldn't reach the bot".
+        open_positions = []
+        for coin, raw in st.open_positions.items():
+            pos = state_mod.State._as_pos(raw) or {"side": str(raw), "units": 1}
+            open_positions.append(
+                {"coin": coin, "side": pos["side"], "units": pos["units"]}
+            )
         realized_today = round(float(st.realized_today_usd), 2)
     except Exception:
         open_positions = []
@@ -1609,8 +1616,15 @@ function render(s){
 
   const pl=$("posList");
   if(s.open_positions && s.open_positions.length){
-    pl.innerHTML = s.open_positions.map(p=>
-      '<li><span>'+p.coin+'</span><span class="'+p.side+'">'+p.side.toUpperCase()+'</span></li>').join("");
+    pl.innerHTML = s.open_positions.map(p=>{
+      // Defensive: `side` may be a plain string (current API) or the {side,units} object a stale
+      // cached page might still hold — never assume, or render() throws and the whole panel freezes.
+      var side = (p.side && typeof p.side==="object") ? p.side.side : p.side;
+      var units = p.units || (p.side && typeof p.side==="object" ? p.side.units : 1) || 1;
+      side = String(side||"");
+      var badge = side.toUpperCase() + (units>1 ? ' ×'+units : '');
+      return '<li><span>'+p.coin+'</span><span class="'+side+'">'+badge+'</span></li>';
+    }).join("");
   } else { pl.innerHTML='<li class="empty">none</li>'; }
 
   const lg=$("log");
