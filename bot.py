@@ -100,6 +100,20 @@ def _flag_undetermined_if_needed(
         )
 
 
+def _equity_if_dynamic(ex: Executor, cfg: config.Config) -> Optional[float]:
+    """
+    Live account equity (USD) when DYNAMIC_SIZING is on, else None. Only queries
+    Hyperliquid when the feature is on, so a static-sizing client pays no extra request.
+
+    None here is NOT "unknown, carry on": with dynamic sizing there is no honest size
+    without it, so sizing.plan_open and risk.can_open both refuse the open. Opens are
+    rare enough (a handful a day) that the extra round-trip costs nothing worth saving.
+    """
+    if getattr(cfg, "dynamic_sizing", False):
+        return ex.account_value()
+    return None
+
+
 def _handle_event(
     ev: dict, st: state_mod.State, ex: Executor, cfg: config.Config
 ) -> None:
@@ -126,11 +140,12 @@ def _handle_event(
                 age_min,
             )
             return
-        margin, lev, why = sizing.plan_open(coin, cfg, ev)
+        equity = _equity_if_dynamic(ex, cfg)
+        margin, lev, why = sizing.plan_open(coin, cfg, ev, equity)
         if margin is None:
             log.info("skip OPEN %s %s — %s", side, coin, why)
             return
-        allowed, reason = risk.can_open(st, cfg)
+        allowed, reason = risk.can_open(st, cfg, equity)
         if not allowed:
             log.warning("skip OPEN %s %s — blocked: %s", side, coin, reason)
             return
@@ -165,7 +180,8 @@ def _handle_event(
             return
         # A flip opens a new position; honour the open-side risk checks AND the
         # sizing policy. If the new side isn't tradable (micro-cap), close only.
-        margin, lev, why = sizing.plan_open(coin, cfg, ev)
+        equity = _equity_if_dynamic(ex, cfg)
+        margin, lev, why = sizing.plan_open(coin, cfg, ev, equity)
         if margin is None:
             log.info("FLIP %s — new side not traded (%s); closing only", coin, why)
             res = ex.close(coin)
@@ -174,7 +190,7 @@ def _handle_event(
                 _apply_realized(res, st)
                 _flag_undetermined_if_needed(res, st, cfg)
             return
-        allowed, reason = risk.can_open(st, cfg)
+        allowed, reason = risk.can_open(st, cfg, equity)
         if not allowed:
             # Still close the existing side to reduce risk, but don't reopen.
             log.warning(
@@ -209,7 +225,8 @@ def _handle_event(
                 age_min,
             )
             return
-        margin, lev, why = sizing.plan_open(coin, cfg, ev)
+        equity = _equity_if_dynamic(ex, cfg)
+        margin, lev, why = sizing.plan_open(coin, cfg, ev, equity)
         if margin is None:
             log.info("skip INCREASE %s %s — %s", side, coin, why)
             return
@@ -227,7 +244,7 @@ def _handle_event(
                 "INCREASE %s %s — already at %d unit(s); nothing to add", side, coin, units_prev
             )
             return
-        allowed, reason = risk.can_open(st, cfg)
+        allowed, reason = risk.can_open(st, cfg, equity)
         if not allowed:
             log.warning("skip INCREASE %s %s — blocked: %s", side, coin, reason)
             return

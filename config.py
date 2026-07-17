@@ -55,6 +55,8 @@ KNOWN_ENV_KEYS = (
     "ISOLATED",
     "SIZE_USD",
     "BASE_MARGIN_USD",
+    "DYNAMIC_SIZING",
+    "EQUITY_FLOOR_USD",
     "MAX_OPEN",
     "DAILY_LOSS_LIMIT_USD",
     "DRY_RUN",
@@ -116,6 +118,8 @@ class Config:
     risk_per_trade_pct: float  # % del capital base por operación (1.0 = misma proporción que el modelo)
     size_usd: float            # margen por op en modo fixed = base_capital * pct/100 (o SIZE_USD si se fuerza)
     base_margin_usd: float     # margen de referencia (×1.0) en modo model; el modelo aplica ×1.5 large / ×0.5 small
+    dynamic_sizing: bool       # el % se aplica a la EQUITY VIVA (accountValue) en vez de a base_capital
+    equity_floor_usd: float    # con dynamic_sizing: por debajo de esta equity no se abre (0 = sin suelo)
     leverage: float
     isolated: bool             # margen isolated (True) vs cross (False)
 
@@ -181,7 +185,25 @@ class Config:
             access = "EXPIRED — renew with /bot on Telegram"
         else:
             access = f"~{days:.0f} day(s) left (renew with /bot before it lapses)"
-        if self.sizing_mode == "model":
+        if self.dynamic_sizing:
+            # With dynamic sizing the USD figures would be a lie: they depend on the live
+            # account, unknown until a signal arrives. Print the RULE, not a fake number.
+            floor = f"{self.equity_floor_usd:g} USD" if self.equity_floor_usd > 0 else "none"
+            sizing = (
+                f"  sizing mode      : DYNAMIC ({self.risk_per_trade_pct:g}% of LIVE equity per trade)\n"
+                f"                     read fresh before each open; grows and shrinks with the account\n"
+                + (
+                    f"    → large-cap    : {self.risk_per_trade_pct * 1.5:g}% of equity @ 10x\n"
+                    f"    → small-cap    : {self.risk_per_trade_pct * 0.5:g}% of equity @ 5x\n"
+                    f"    → micro-cap    : not traded\n"
+                    if self.sizing_mode == "model" else
+                    f"    → every coin   : {self.risk_per_trade_pct:g}% of equity @ {self.leverage:g}x\n"
+                    f"                     (micro-caps <$100M are never traded)\n"
+                ) +
+                f"  equity floor     : {floor} (below it: close only)\n"
+                f"  BASE_CAPITAL     : ignored while dynamic sizing is on\n"
+            )
+        elif self.sizing_mode == "model":
             sizing = (
                 f"  sizing mode      : MODEL (follow market-cap tiers)\n"
                 f"  base margin      : {self.base_margin_usd:g} USD (×1.0 reference)\n"
@@ -241,6 +263,14 @@ def load_config() -> Config:
         risk_per_trade_pct=risk_pct,
         size_usd=size_usd,
         base_margin_usd=base_margin_usd,
+        # Sizing DINÁMICO (opt-in): el % por operación se aplica a la equity VIVA de la cuenta
+        # (accountValue = margen + no realizado), leída antes de cada apertura, en vez de a un
+        # BASE_CAPITAL tecleado a mano. Un capital estático deja de describir la cuenta en cuanto
+        # esta se mueve, y en drawdown yerra A FAVOR del riesgo: sigue dimensionando con dinero
+        # que ya no está. Apagado por defecto — esto corre en las máquinas de los clientes y su
+        # tamaño de posición no cambia a sus espaldas.
+        dynamic_sizing=_get_bool("DYNAMIC_SIZING", False),
+        equity_floor_usd=_get_float("EQUITY_FLOOR_USD", 0.0),
         leverage=_get_float("LEVERAGE", 10.0),
         isolated=_get_bool("ISOLATED", True),
         max_open=_get_int("MAX_OPEN", 10),
