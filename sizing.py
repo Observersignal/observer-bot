@@ -59,13 +59,44 @@ def _lev_for(tier: str, signal: dict, fallback: float) -> float:
     return _TIER_LEV.get(tier, fallback)
 
 
-def plan_open(coin: str, cfg: Config, signal: Optional[dict] = None
+def _base_margin(cfg: Config, equity: Optional[float]) -> "tuple[Optional[float], str]":
+    """
+    The ×1.0 reference margin a tier multiplier is applied to.
+
+    Static (default): the configured BASE_MARGIN_USD, derived once from BASE_CAPITAL.
+
+    Dynamic (DYNAMIC_SIZING=true): RISK_PER_TRADE_PCT of the account's LIVE equity,
+    read fresh before each open. This is the honest denominator — a hand-typed
+    BASE_CAPITAL stops describing the account the moment it moves, and in a drawdown
+    it errs towards MORE risk, which is the wrong direction to be wrong in.
+
+    Returns (margin, why). margin=None means "refuse to size" and the caller must skip
+    the open: with dynamic sizing on and no equity reading there is no honest number,
+    and silently falling back to the static base would resurrect the very bug this
+    replaces.
+    """
+    if not getattr(cfg, "dynamic_sizing", False):
+        return cfg.base_margin_usd, "base"
+    if equity is None:
+        return None, "equity unreadable — refusing to size (DYNAMIC_SIZING is on)"
+    floor = getattr(cfg, "equity_floor_usd", 0.0) or 0.0
+    if floor > 0 and equity < floor:
+        return None, f"equity {equity:.2f} below floor {floor:g} USD — not opening"
+    return equity * cfg.risk_per_trade_pct / 100.0, f"{cfg.risk_per_trade_pct:g}% of {equity:.2f}"
+
+
+def plan_open(coin: str, cfg: Config, signal: Optional[dict] = None,
+              equity: Optional[float] = None
               ) -> "tuple[Optional[float], Optional[float], str]":
     """
     Decide (margin_usd, leverage, reason) for opening `coin`.
 
-    Returns (None, None, reason) to SKIP the trade (micro-cap, or a zeroed
-    multiplier). Otherwise (margin, leverage, tier-or-mode label).
+    `equity` is the live account value (executor.account_value()) and is only consulted
+    when DYNAMIC_SIZING is on. Pass None when the account can't be read — with dynamic
+    sizing that refuses the trade on purpose.
+
+    Returns (None, None, reason) to SKIP the trade (micro-cap, zeroed multiplier, or no
+    honest size available). Otherwise (margin, leverage, tier-or-mode label).
     """
     signal = signal or {}
     tier = _tier_for(coin, signal)
@@ -74,13 +105,21 @@ def plan_open(coin: str, cfg: Config, signal: Optional[dict] = None
     if tier == TIER_MICRO:
         return None, None, f"micro-cap ({coin}) — not traded"
 
+    base, why = _base_margin(cfg, equity)
+    if base is None:
+        return None, None, why
+
     if cfg.sizing_mode == "model":
         mult = _mult_for(tier, signal)
         if mult <= 0:
             return None, None, f"zero size multiplier for {coin} (tier {tier})"
-        margin = cfg.base_margin_usd * mult
+        margin = base * mult
         lev = _lev_for(tier, signal, cfg.leverage)
-        return margin, lev, f"model:{tier} ({mult:g}x base @ {lev:g}x)"
+        return margin, lev, f"model:{tier} ({mult:g}x {why} @ {lev:g}x)"
 
-    # fixed mode: same margin/leverage for every (non-micro) coin.
+    # fixed mode: same margin/leverage for every (non-micro) coin. Dynamic sizing still
+    # applies here — "fixed" means every tier gets the same size, not that the size is
+    # frozen to a number typed months ago.
+    if getattr(cfg, "dynamic_sizing", False):
+        return base, cfg.leverage, f"fixed ({why})"
     return cfg.size_usd, cfg.leverage, "fixed"

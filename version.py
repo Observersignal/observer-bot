@@ -12,4 +12,4 @@ SINGLE SOURCE OF TRUTH for the bot's version. Two things read it:
 Bump it in the same commit as any change to how the bot reads the feed or places orders.
 """
 
-__version__ = "1.1.2"
+__version__ = "1.2.0"

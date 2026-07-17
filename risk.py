@@ -18,15 +18,18 @@ from state import State
 STOP_FILE = "STOP"
 
 
-def can_open(state: State, cfg: Config) -> "tuple[bool, str]":
+def can_open(state: State, cfg: Config, equity: "float | None" = None) -> "tuple[bool, str]":
     """
     Return (allowed, reason).
 
     Blocks a new open when:
       - the STOP kill-switch file exists,
       - a recent close's realized PnL is undetermined (daily stop unreliable),
-      - the number of open positions is already at MAX_OPEN, or
+      - the number of open positions is already at MAX_OPEN,
+      - the account's live equity is below EQUITY_FLOOR_USD (dynamic sizing only), or
       - today's realized loss has reached the daily loss limit.
+
+    `equity` is the live account value; only consulted with DYNAMIC_SIZING + a floor set.
     """
     if os.path.exists(STOP_FILE):
         return False, f"kill-switch active ({STOP_FILE} file present)"
@@ -44,6 +47,17 @@ def can_open(state: State, cfg: Config) -> "tuple[bool, str]":
     open_count = state.count_open()
     if open_count >= cfg.max_open:
         return False, f"max open positions reached ({open_count}/{cfg.max_open})"
+
+    # Equity floor: below it, stop opening and only close. Dynamic sizing already shrinks
+    # every trade with the account, but past a point the positions are dust the exchange
+    # rejects anyway, and feeding the last of the account to orders that can't work helps
+    # nobody. Only meaningful with dynamic sizing — without it there's no equity to read.
+    floor = getattr(cfg, "equity_floor_usd", 0.0) or 0.0
+    if getattr(cfg, "dynamic_sizing", False) and floor > 0:
+        if equity is None:
+            return False, "equity unreadable — pausing new opens (EQUITY_FLOOR_USD is set)"
+        if equity < floor:
+            return False, f"equity floor reached ({equity:.2f} < {floor:g} USD) — only closing"
 
     # realized_today_usd is negative when losing. Block once the loss reaches
     # the configured limit.

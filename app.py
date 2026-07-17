@@ -374,6 +374,12 @@ def _build_status() -> Dict[str, Any]:
         "base_capital": cfg.base_capital,
         "size_usd": cfg.size_usd,
         "base_margin_usd": cfg.base_margin_usd,
+        # Con dynamic sizing, base_capital/size_usd/base_margin_usd de arriba son
+        # inertes: el tamaño real es risk_per_trade_pct de la equity viva, resuelto
+        # en cada apertura. Se expone para que el panel no muestre una cifra que
+        # nada usa.
+        "dynamic_sizing": cfg.dynamic_sizing,
+        "equity_floor_usd": cfg.equity_floor_usd,
         "risk_per_trade_pct": cfg.risk_per_trade_pct,
         "leverage": cfg.leverage,
         "isolated": cfg.isolated,
@@ -411,6 +417,12 @@ def _config_summary_masked() -> Dict[str, Any]:
         "risk_per_trade_pct": cfg.risk_per_trade_pct,
         "size_usd": cfg.size_usd,
         "base_margin_usd": cfg.base_margin_usd,
+        # Con dynamic sizing, base_capital/size_usd/base_margin_usd de arriba son
+        # inertes: el tamaño real es risk_per_trade_pct de la equity viva, resuelto
+        # en cada apertura. Se expone para que el panel no muestre una cifra que
+        # nada usa.
+        "dynamic_sizing": cfg.dynamic_sizing,
+        "equity_floor_usd": cfg.equity_floor_usd,
         "leverage": cfg.leverage,
         "isolated": cfg.isolated,
         "max_open": cfg.max_open,

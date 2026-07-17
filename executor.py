@@ -228,6 +228,37 @@ class Executor:
             return None
         return 0.0
 
+    def account_value(self) -> Optional[float]:
+        """
+        Live account equity in USD: Hyperliquid's marginSummary.accountValue, i.e. the
+        margin deployed PLUS unrealized PnL. Powers DYNAMIC_SIZING, which sizes each open
+        as a percentage of this instead of a hand-typed BASE_CAPITAL.
+
+        It deliberately includes unrealized PnL: that is what makes sizing breathe with
+        the account — larger while positions are working, smaller in a drawdown. It also
+        means the number moves with the market, so two signals a minute apart can size
+        differently. That is the intent, not a bug.
+
+        Returns None if it can't be read, and the callers (sizing.plan_open,
+        risk.can_open) then REFUSE to open: with no equity there is no honest size, and
+        falling back to the static base would resurrect the exact bug dynamic sizing
+        exists to kill.
+        """
+        if self.info is None or not self.cfg.account_address:
+            return None
+        try:
+            user_state = self.info.user_state(self.cfg.account_address)
+        except Exception as exc:
+            log.warning("account_value: user_state failed: %s", exc)
+            return None
+        try:
+            summary = (user_state or {}).get("marginSummary") or {}
+            raw = summary.get("accountValue")
+            return float(raw) if raw is not None else None
+        except (TypeError, ValueError) as exc:
+            log.warning("account_value: could not parse accountValue: %s", exc)
+            return None
+
     def _sz_decimals_for(self, coin: str) -> Optional[int]:
         """
         Size precision (number of decimals) Hyperliquid allows for `coin`, from
