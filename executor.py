@@ -80,6 +80,10 @@ class Executor:
         # asset allows is rejected as "invalid size", so this is mandatory — not
         # a nicety. None until first lookup.
         self._sz_decimals: "Optional[dict]" = None
+        # Hyperliquid account abstraction mode ("unifiedAccount",
+        # "portfolioMargin", ...), lazily fetched and cached on success. None
+        # until known; a failed query is retried on the next read.
+        self._account_mode: "Optional[str]" = None
 
         # Info (public market data) is always useful; build it if we can.
         if _SDK_OK and Info is not None:
@@ -228,21 +232,78 @@ class Executor:
             return None
         return 0.0
 
+    def _abstraction_mode(self) -> "Optional[str]":
+        """
+        The account's Hyperliquid abstraction mode ("unifiedAccount",
+        "portfolioMargin", or a classic split account). Cached after the first
+        successful read — the mode only changes by explicit user action.
+        Returns None if it can't be read; callers then treat the account as
+        classic, which is the pre-unified behaviour.
+        """
+        if self._account_mode is not None:
+            return self._account_mode
+        if self.info is None or not self.cfg.account_address:
+            return None
+        try:
+            mode = self.info.post(
+                "/info",
+                {"type": "userAbstraction", "user": self.cfg.account_address},
+            )
+        except Exception as exc:
+            log.warning("abstraction_mode: userAbstraction query failed: %s", exc)
+            return None
+        if isinstance(mode, str) and mode:
+            self._account_mode = mode
+            return mode
+        return None
+
+    def _spot_usdc_free(self) -> Optional[float]:
+        """
+        Free (not held) USDC in the spot clearinghouse: total minus hold.
+        Under a unified account this is the deployable capital that lives
+        OUTSIDE the perps margin summary. None if it can't be read.
+        """
+        if self.info is None or not self.cfg.account_address:
+            return None
+        try:
+            spot = self.info.post(
+                "/info",
+                {"type": "spotClearinghouseState", "user": self.cfg.account_address},
+            )
+            for bal in (spot or {}).get("balances", []) or []:
+                if isinstance(bal, dict) and bal.get("coin") == "USDC":
+                    return float(bal.get("total") or 0.0) - float(bal.get("hold") or 0.0)
+            return 0.0
+        except Exception as exc:
+            log.warning("spot_usdc_free: spotClearinghouseState failed: %s", exc)
+            return None
+
     def account_value(self) -> Optional[float]:
         """
-        Live account equity in USD: Hyperliquid's marginSummary.accountValue, i.e. the
-        margin deployed PLUS unrealized PnL. Powers DYNAMIC_SIZING, which sizes each open
+        Live account equity in USD. Powers DYNAMIC_SIZING, which sizes each open
         as a percentage of this instead of a hand-typed BASE_CAPITAL.
 
-        It deliberately includes unrealized PnL: that is what makes sizing breathe with
-        the account — larger while positions are working, smaller in a drawdown. It also
-        means the number moves with the market, so two signals a minute apart can size
-        differently. That is the intent, not a bug.
+        For a classic account this is Hyperliquid's marginSummary.accountValue: the
+        margin deployed PLUS unrealized PnL. It deliberately includes unrealized PnL:
+        that is what makes sizing breathe with the account — larger while positions
+        are working, smaller in a drawdown. It also means the number moves with the
+        market, so two signals a minute apart can size differently. That is the
+        intent, not a bug.
 
-        Returns None if it can't be read, and the callers (sizing.plan_open,
-        risk.can_open) then REFUSE to open: with no equity there is no honest size, and
-        falling back to the static base would resurrect the exact bug dynamic sizing
-        exists to kill.
+        Under a UNIFIED account (or portfolio margin) the perps clearinghouse only
+        sees the slice of USDC currently held as margin — the rest of the balance
+        lives in the spot clearinghouse ("unified account and portfolio margin show
+        all balances and holds in the spot clearinghouse state", HL docs). Reading
+        marginSummary alone lowballs equity to roughly the margin in use, which on
+        22-Jul-2026 pinned a 905-USD account at "199 USD", tripped EQUITY_FLOOR_USD
+        and silently stopped every open. So here: unified equity = perps
+        accountValue + free spot USDC.
+
+        Returns None if it can't be read — including a unified account whose spot
+        side can't be read: half a number is not an honest equity. The callers
+        (sizing.plan_open, risk.can_open) then REFUSE to open: with no equity there
+        is no honest size, and falling back to the static base would resurrect the
+        exact bug dynamic sizing exists to kill.
         """
         if self.info is None or not self.cfg.account_address:
             return None
@@ -254,10 +315,24 @@ class Executor:
         try:
             summary = (user_state or {}).get("marginSummary") or {}
             raw = summary.get("accountValue")
-            return float(raw) if raw is not None else None
+            perps = float(raw) if raw is not None else None
         except (TypeError, ValueError) as exc:
             log.warning("account_value: could not parse accountValue: %s", exc)
             return None
+        if perps is None:
+            return None
+
+        mode = self._abstraction_mode()
+        if mode in ("unifiedAccount", "portfolioMargin"):
+            free = self._spot_usdc_free()
+            if free is None:
+                log.warning(
+                    "account_value: %s account but spot balance unreadable — "
+                    "refusing to report a lowballed equity", mode
+                )
+                return None
+            return perps + free
+        return perps
 
     def _sz_decimals_for(self, coin: str) -> Optional[int]:
         """
