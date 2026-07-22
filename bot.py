@@ -276,8 +276,11 @@ def _handle_event(
                 _flag_undetermined_if_needed(res, st, cfg)
             return
         if units_new >= units_prev:
-            # Target at/above what we hold (stale or duplicate decrease): sync, no trim.
-            st.set_units(coin, units_new)
+            # Target at/above what we hold: nothing to trim. Do NOT sync our count up
+            # to the model's — `units` tracks what WE actually opened, and with
+            # ALLOW_INCREASE off (or a missed increase) the model holds more copies
+            # than us. Inflating the count made later decreases trim a fraction of a
+            # position we never scaled up, leaving odd sub-unit sizes on the account.
             log.info(
                 "DECREASE %s %s — target %d >= held %d; nothing to trim",
                 side, coin, units_new, units_prev,

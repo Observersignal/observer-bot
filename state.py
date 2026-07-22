@@ -186,7 +186,26 @@ class State:
             if prev is not None and prev["side"] == side:
                 merged[coin] = {"side": side, "units": prev["units"]}
             else:
+                # A position we were NOT tracking (or tracked on the other side).
+                # Adopting it keeps MAX_OPEN honest, but be LOUD about it: if it
+                # predates this state file (an update/reset), its close signal may
+                # already be behind the cursor and will never arrive — the position
+                # would sit here forever, possibly sized under an older config.
+                # That exact silence left two stale positions unmanaged until the
+                # owner spotted them by hand.
+                log.warning(
+                    "reconcile: adopting untracked HL position %s %s as 1 unit — "
+                    "not opened by this bot's current state; verify its size and "
+                    "close it manually if its close signal already passed",
+                    coin, side,
+                )
                 merged[coin] = {"side": side, "units": 1}
+        for coin in self.open_positions:
+            if coin not in merged:
+                # Tracked locally but flat on HL: closed outside the bot (manual
+                # close, liquidation, or a missed close). Dropping it is correct —
+                # HL is the truth — but say so instead of vanishing it silently.
+                log.info("reconcile: %s closed on HL outside the bot — dropping it", coin)
         self.open_positions = merged
         if realized_today is not None:
             self.realized_today_usd = float(realized_today)
